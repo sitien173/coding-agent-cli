@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000000"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Turn 1 reply"}}
+{"type":"turn.completed","usage":{"input_tokens":10000,"cached_input_tokens":2000,"cache_write_input_tokens":500,"output_tokens":20,"reasoning_output_tokens":10}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Turn 2 reply"}}
+{"type":"turn.completed","usage":{"input_tokens":12000,"cached_input_tokens":8000,"cache_write_input_tokens":300,"output_tokens":30,"reasoning_output_tokens":15}}

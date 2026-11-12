@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "coding-agent-cli"
+version = "0.1.0"
+description = "Run coding-agent CLIs from Python, stream typed events, and get a classified result."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
+]
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "pyright"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/coding_agent_cli"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-m 'not live'"
+testpaths = ["tests"]
+markers = ["live: runs a real coding-agent CLI; excluded by default"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
