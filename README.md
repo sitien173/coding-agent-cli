@@ -1,5 +1,10 @@
 # coding-agent-cli
 
+[![CI](https://github.com/sitien173/coding-agent-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/sitien173/coding-agent-cli/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/coding-agent-cli)](https://pypi.org/project/coding-agent-cli/)
+[![Python](https://img.shields.io/pypi/pyversions/coding-agent-cli)](https://pypi.org/project/coding-agent-cli/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 Run coding-agent CLIs from Python, stream typed events, and get a classified result.
 
 Built-in drivers: `claude`, `codex`, `pi`, and `agy`. Python 3.12 or later on Linux, macOS, and Windows. No runtime dependencies.
@@ -169,13 +174,20 @@ result = await run(Request(driver="my-cli", prompt="Hi", cwd=Path.cwd()), regist
 - **Windows process trees.** Cleanup uses `taskkill /T /F`. A descendant whose launcher exits first can be missed. Job Objects are not used in 0.1.
 - **Live behavior.** The test suite uses fake CLIs. The live tests in `tests/test_live.py` run the real CLIs and are excluded by default: `uv run pytest -m live -rP`.
 
-## Development
+## Contributing
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the coding standard, and the pull request process. Report security problems privately as described in [SECURITY.md](SECURITY.md). Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ```bash
-uv sync --locked
-uv run pytest
+uv sync
+uv run ruff format --check && uv run ruff check
 uv run pyright
+uv run pytest
 ```
+
+## License
+
+[MIT](LICENSE)
 
 ## Provenance
 
