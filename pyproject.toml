@@ -10,8 +10,13 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
+authors = [{ name = "sitien173" }]
+keywords = ["claude", "codex", "coding-agent", "cli", "subprocess", "asyncio"]
 dependencies = []
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Framework :: AsyncIO",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -20,8 +25,18 @@ classifiers = [
     "Typing :: Typed",
 ]
 
+[project.urls]
+Homepage = "https://github.com/sitien173/coding-agent-cli"
+Issues = "https://github.com/sitien173/coding-agent-cli/issues"
+Changelog = "https://github.com/sitien173/coding-agent-cli/blob/main/CHANGELOG.md"
+
 [dependency-groups]
-dev = ["pytest", "pytest-asyncio", "pyright"]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pyright",
+    "ruff>=0.17.4",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/coding_agent_cli"]
@@ -36,3 +51,15 @@ markers = ["live: runs a real coding-agent CLI; excluded by default"]
 [tool.pyright]
 include = ["src", "tests"]
 pythonVersion = "3.12"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "ASYNC"]
+# Temp-file and path calls are microsecond-scale; offloading them to threads adds cost without benefit.
+ignore = ["ASYNC240"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ASYNC110", "ASYNC221"]

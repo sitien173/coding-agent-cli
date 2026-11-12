@@ -247,7 +247,11 @@ class CodexRolloutCollector:
         except OSError:
             self._invalidate_and_reset()
             return None
-        if self.file_dev is not None and self.file_ino is not None and (stat.st_dev, stat.st_ino) != (self.file_dev, self.file_ino):
+        if (
+            self.file_dev is not None
+            and self.file_ino is not None
+            and (stat.st_dev, stat.st_ino) != (self.file_dev, self.file_ino)
+        ):
             self._invalidate_and_reset()
             return None
         return stat
@@ -275,7 +279,10 @@ class CodexRolloutCollector:
             fd = os.open(self.session_file, flags)
             try:
                 opened = os.fstat(fd)
-                if not stat_module.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (self.file_dev, self.file_ino):
+                if not stat_module.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+                    self.file_dev,
+                    self.file_ino,
+                ):
                     self._invalidate_and_reset()
                     return b""
                 with os.fdopen(fd, "rb") as f:
@@ -398,7 +405,10 @@ def _read_first_line(path: Path, expected: os.stat_result) -> tuple[os.stat_resu
     fd = os.open(path, flags)
     try:
         opened = os.fstat(fd)
-        if not stat_module.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+        if not stat_module.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+            expected.st_dev,
+            expected.st_ino,
+        ):
             return None
         with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
             fd = -1

@@ -50,7 +50,9 @@ def _event(**fields: object) -> str:
 
 
 def _assistant_message(text: str, **fields: object) -> str:
-    return _event(type="message_end", message={"role": "assistant", "content": [{"type": "text", "text": text}], **fields})
+    return _event(
+        type="message_end", message={"role": "assistant", "content": [{"type": "text", "text": text}], **fields}
+    )
 
 
 def _assistant(**fields: object) -> dict[str, Any]:
@@ -106,10 +108,15 @@ def test_recorded_stream_pins_text_session_model_and_usage(tmp_path: Path, monke
 
 
 def test_session_event_supplies_session_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    stub_cli(monkeypatch, tmp_path, "pi", [
-        _event(type="session", id="pi-sess-1"),
-        _assistant_message("hello"),
-    ])
+    stub_cli(
+        monkeypatch,
+        tmp_path,
+        "pi",
+        [
+            _event(type="session", id="pi-sess-1"),
+            _assistant_message("hello"),
+        ],
+    )
     events: list[Event] = []
 
     result = asyncio.run(run_driver("pi", tmp_path, events=events))
@@ -142,7 +149,9 @@ def test_structured_error_with_partial_text_cannot_hide_the_failure() -> None:
     assert result.text == "partial"
 
 
-def test_command_failure_with_text_is_retryable_execution_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_command_failure_with_text_is_retryable_execution_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     stub_cli(monkeypatch, tmp_path, "pi", [_assistant_message("reply")], exit_code=3)
 
     result = asyncio.run(run_driver("pi", tmp_path, session_id="s"))
@@ -159,7 +168,9 @@ def test_fatal_token_in_diagnostic_line_is_agent_fatal_auth() -> None:
     assert result.error is not None and result.error.code == "auth"
 
 
-def test_context_overflow_signature_is_request_fatal_context_overflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_context_overflow_signature_is_request_fatal_context_overflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     stub_cli(monkeypatch, tmp_path, "pi", [_assistant_message("partial"), "context_length_exceeded"], exit_code=1)
 
     result = asyncio.run(run_driver("pi", tmp_path))
@@ -190,7 +201,9 @@ def test_timeout_without_reply_is_retryable_timeout(tmp_path: Path, monkeypatch:
 
 
 @pytest.mark.asyncio
-async def test_cancel_before_start_is_cancelled_and_spawns_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_cancel_before_start_is_cancelled_and_spawns_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "pi", [_assistant_message("never")], record=record)
     cancel = asyncio.Event()
@@ -232,10 +245,14 @@ async def test_portable_options_map_to_pi_flags_after_transport_flags(
 
     assert json.loads(record.read_text(encoding="utf-8"))["argv"] == [
         "pi",
-        "--mode", "json",
-        "--system-prompt", "sp",
-        "--model", "m",
-        "--thinking", "high",
+        "--mode",
+        "json",
+        "--system-prompt",
+        "sp",
+        "--model",
+        "m",
+        "--thinking",
+        "high",
         "--x",
     ]
 
@@ -325,11 +342,15 @@ async def test_bad_cwd_is_rejected_before_spawn(tmp_path: Path, monkeypatch: pyt
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "pi", [_assistant_message("ok")], record=record)
 
-    result = await DriverRegistry().get("pi").run(
-        Request(driver="pi", prompt="p", cwd=tmp_path / "missing"),
-        on_event=_discard,
-        cancel=asyncio.Event(),
-        on_spawn=None,
+    result = (
+        await DriverRegistry()
+        .get("pi")
+        .run(
+            Request(driver="pi", prompt="p", cwd=tmp_path / "missing"),
+            on_event=_discard,
+            cancel=asyncio.Event(),
+            on_spawn=None,
+        )
     )
 
     assert result.outcome is Outcome.REQUEST_FATAL
@@ -624,7 +645,11 @@ def test_repeated_message_end_and_turn_end_do_not_double_count() -> None:
 
 
 def test_lifecycle_deduplication_without_provider_ids() -> None:
-    message = {"role": "assistant", "content": [{"type": "text", "text": "turn 1 message"}], "usage": {"input": 150, "output": 25}}
+    message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "turn 1 message"}],
+        "usage": {"input": 150, "output": 25},
+    }
     _run, result, _events = _parse(
         _event(type="session", id="pi-sess-noid"),
         _end(message),
@@ -637,7 +662,11 @@ def test_lifecycle_deduplication_without_provider_ids() -> None:
 
 
 def test_repeated_message_end_within_one_turn_is_counted_once() -> None:
-    message = {"role": "assistant", "content": [{"type": "text", "text": "Turn 1 answer"}], "usage": {"input": 100, "output": 20}}
+    message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Turn 1 answer"}],
+        "usage": {"input": 100, "output": 20},
+    }
     _run, result, _events = _parse(
         _event(type="session", id="pi-sess-no-id-turns"),
         _event(type="turn_start"),
@@ -651,7 +680,11 @@ def test_repeated_message_end_within_one_turn_is_counted_once() -> None:
 
 
 def test_repeated_no_id_turn_end_does_not_open_an_implicit_turn() -> None:
-    message = {"role": "assistant", "content": [{"type": "text", "text": "Turn 1 message"}], "usage": {"input": 100, "output": 20}}
+    message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Turn 1 message"}],
+        "usage": {"input": 100, "output": 20},
+    }
     _run, result, _events = _parse(
         _event(type="session", id="pi-sess-repro"),
         _event(type="turn_start"),
@@ -665,7 +698,11 @@ def test_repeated_no_id_turn_end_does_not_open_an_implicit_turn() -> None:
 
 
 def test_total_tokens_is_never_context_occupancy_without_retained_input() -> None:
-    with_input = {"role": "assistant", "responseId": "r1", "usage": {"input": 500, "output": 25, "cacheRead": 100, "cacheWrite": 0, "totalTokens": 625}}
+    with_input = {
+        "role": "assistant",
+        "responseId": "r1",
+        "usage": {"input": 500, "output": 25, "cacheRead": 100, "cacheWrite": 0, "totalTokens": 625},
+    }
     without_input = {"role": "assistant", "responseId": "r2", "usage": {"output": 25, "totalTokens": 625}}
 
     _run, result, _events = _parse(_end(with_input))
@@ -679,7 +716,14 @@ def test_capacity_stays_unknown_when_the_stream_reports_no_window() -> None:
     _run, result, _events = _parse(
         _event(type="session", id="pi-sess-111"),
         _event(type="turn_start"),
-        _end({"role": "assistant", "id": "msg_1", "content": "Hello", "usage": {"input": 400, "output": 50, "cacheRead": 100}}),
+        _end(
+            {
+                "role": "assistant",
+                "id": "msg_1",
+                "content": "Hello",
+                "usage": {"input": 400, "output": 50, "cacheRead": 100},
+            }
+        ),
         _event(type="turn_end"),
     )
 
@@ -687,7 +731,9 @@ def test_capacity_stays_unknown_when_the_stream_reports_no_window() -> None:
     assert result.usage.context_used == 550
 
 
-def test_recorded_fixture_totals_exceed_the_final_message_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recorded_fixture_totals_exceed_the_final_message_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     stub_cli(monkeypatch, tmp_path, "pi", USAGE_FIXTURE.read_text(encoding="utf-8").splitlines())
     events: list[Event] = []
 
@@ -698,4 +744,3 @@ def test_recorded_fixture_totals_exceed_the_final_message_alone(tmp_path: Path, 
     assert result.usage.cache_read == 11904
     assert any(isinstance(event, UsageUpdated) for event in events)
     assert result.model == "gpt-6.1-sol"
-

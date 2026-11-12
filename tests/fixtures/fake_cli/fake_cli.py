@@ -4,7 +4,8 @@ argv[1] is a JSON config file. argv[2:] are the arguments the backend passed.
 The config keys are optional: ``name`` (executable name for the record), ``record``
 (path to write argv, stdin, and cwd), ``pid_file`` (path to write this PID),
 ``raw_hex`` (stdout lines written verbatim from hex, before ``lines``), ``lines``
-(stdout lines to print), ``log_text`` (written to the path after ``--log-file``), ``last_message`` (written to the path after ``-o``),
+(stdout lines to print), ``log_text`` (written to the path after ``--log-file``),
+``last_message`` (written to the path after ``-o``),
 ``sleep_s`` (seconds to sleep after printing), and ``exit_code``.
 """
 

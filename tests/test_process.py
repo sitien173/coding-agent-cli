@@ -161,7 +161,9 @@ def test_cancelled_caller_task_kills_the_tree_and_propagates_cancelled_error(tmp
             if line == "ready":
                 ready.set()
 
-        task = asyncio.create_task(run_process(fake("spawn_and_sleep.py", pid_file), None, None, None, None, None, on_line))
+        task = asyncio.create_task(
+            run_process(fake("spawn_and_sleep.py", pid_file), None, None, None, None, None, on_line)
+        )
         await asyncio.wait_for(ready.wait(), 10)
         task.cancel()
         await task

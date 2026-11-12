@@ -65,7 +65,10 @@ def _prompt_error(prompt: str) -> Diagnostic | None:
     if size > PROMPT_LIMIT_BYTES:
         return Diagnostic(
             code="invalid_prompt",
-            message=f"agy prompt is {size} bytes, above the 100 KiB ({PROMPT_LIMIT_BYTES} bytes) limit for the prompt argument",
+            message=(
+                f"agy prompt is {size} bytes, "
+                f"above the 100 KiB ({PROMPT_LIMIT_BYTES} bytes) limit for the prompt argument"
+            ),
         )
     return None
 
@@ -79,7 +82,10 @@ def _command_line_error(argv: list[str]) -> Diagnostic | None:
         return None
     return Diagnostic(
         code="invalid_prompt",
-        message=f"agy command line is {chars} characters, above the Windows limit of {WINDOWS_COMMAND_LINE_LIMIT_CHARS} characters",
+        message=(
+            f"agy command line is {chars} characters, "
+            f"above the Windows limit of {WINDOWS_COMMAND_LINE_LIMIT_CHARS} characters"
+        ),
     )
 
 
@@ -172,9 +178,13 @@ class AgyRun:
             self.tool_counter += 1
             self.active_tool_id = f"tool-{self.tool_counter}"
             tool_name = str(update.get("tool_name", "") or tool_info.get("name", ""))
-            self.events.emit(tool_started(self.active_tool_id, "agy", tool_name, tool_input=tool_info.get("parameters")))
+            self.events.emit(
+                tool_started(self.active_tool_id, "agy", tool_name, tool_input=tool_info.get("parameters"))
+            )
         elif state == "DONE":
-            self.events.emit(ToolCompleted(status="completed", entity_id=self.active_tool_id or f"tool-{self.tool_counter or 1}"))
+            self.events.emit(
+                ToolCompleted(status="completed", entity_id=self.active_tool_id or f"tool-{self.tool_counter or 1}")
+            )
             self.active_tool_id = ""
 
     def _step_usage(self, update: dict[str, Any], usage: dict[str, Any]) -> None:
@@ -187,7 +197,9 @@ class AgyRun:
         self.step_counter += 1
         step_index = update.get("step_index")
         step_id = f"step_{step_index}" if step_index is not None else f"step_{self.step_counter}"
-        self.counters.record_response(step_id, input=raw_in, output=raw_out, cache_read=cache_read, cache_write=cache_write)
+        self.counters.record_response(
+            step_id, input=raw_in, output=raw_out, cache_read=cache_read, cache_write=cache_write
+        )
         window = as_int(
             usage.get("model_context_window")
             or usage.get("context_window_size")
@@ -231,7 +243,9 @@ class AgyRun:
     def finish(self, process: ProcessOutcome, cancel: asyncio.Event, log_text: str) -> Result:
         """Map the parsed stream, the log file text, and the transport outcome to a result."""
         match = _CONVERSATION_ID_RE.search(log_text)
-        session_id = match.group(1) if match else (self.stream_session_id or self.conversation_id or self.requested_session)
+        session_id = (
+            match.group(1) if match else (self.stream_session_id or self.conversation_id or self.requested_session)
+        )
         if not self.saw_event:
             text = "\n".join(self.plain_lines).strip()
         else:
@@ -253,7 +267,17 @@ class AgyDriver(CliDriver):
 
     name = "agy"
     executable = "agy"
-    owned_flags = ("--output-format", "--log-file", "--conversation", "--new-project", "--print", "-p", "--prompt", "--continue", "-c")
+    owned_flags = (
+        "--output-format",
+        "--log-file",
+        "--conversation",
+        "--new-project",
+        "--print",
+        "-p",
+        "--prompt",
+        "--continue",
+        "-c",
+    )
     portable_flags = {"model": ("--model",)}
     help_markers = ("--output-format", "stream-json", "--log-file")
 

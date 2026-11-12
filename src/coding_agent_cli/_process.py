@@ -64,7 +64,7 @@ async def _discard_until_eof(stdout: asyncio.StreamReader) -> None:
     try:
         while await asyncio.wait_for(stdout.read(64 * 1024), EXIT_GRACE_S):
             pass
-    except (asyncio.TimeoutError, OSError):
+    except (TimeoutError, OSError):
         pass
 
 
@@ -117,7 +117,7 @@ async def _read_one(
     """Read and handle one line. Return "" to keep looping, "eof" at end of output, or "failed"."""
     try:
         raw = await asyncio.wait_for(stdout.readline(), POLL_INTERVAL_S)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return ""
     except ValueError:
         outcome.error, outcome.error_class = "output line exceeds 1 MiB", "execution_error"

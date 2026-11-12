@@ -53,17 +53,19 @@ def stub_cli(
     bin_dir.mkdir(exist_ok=True)
     config = tmp_path / f"fake-{executable}.json"
     config.write_text(
-        json.dumps({
-            "name": executable,
-            "lines": list(lines),
-            "raw_hex": list(raw_hex),
-            "exit_code": exit_code,
-            "sleep_s": sleep_s,
-            "record": None if record is None else str(record),
-            "pid_file": None if pid_file is None else str(pid_file),
-            "log_text": log_text,
-            "last_message": last_message,
-        }),
+        json.dumps(
+            {
+                "name": executable,
+                "lines": list(lines),
+                "raw_hex": list(raw_hex),
+                "exit_code": exit_code,
+                "sleep_s": sleep_s,
+                "record": None if record is None else str(record),
+                "pid_file": None if pid_file is None else str(pid_file),
+                "log_text": log_text,
+                "last_message": last_message,
+            }
+        ),
         encoding="utf-8",
     )
     launcher = install_launcher(bin_dir, executable, FAKE_CLI, [str(config)])
@@ -127,11 +129,15 @@ async def run_driver(
         sink.append(event)
 
     request = Request(driver=driver, prompt=fields.pop("prompt", "p"), cwd=cwd, **fields)
-    return await DriverRegistry().get(driver).run(
-        request,
-        on_event=on_event,
-        cancel=cancel or asyncio.Event(),
-        on_spawn=None,
+    return (
+        await DriverRegistry()
+        .get(driver)
+        .run(
+            request,
+            on_event=on_event,
+            cancel=cancel or asyncio.Event(),
+            on_spawn=None,
+        )
     )
 
 

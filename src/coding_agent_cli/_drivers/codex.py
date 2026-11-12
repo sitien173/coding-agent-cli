@@ -213,7 +213,12 @@ class CodexRun:
         if norm_in is None or norm_out is None:
             return
         used = norm_in + norm_out - (reasoning_out or 0)
-        if used >= 0 and not self.collector.is_compacted and not self.collector.has_verified_context and not self.collector.budget_exhausted:
+        if (
+            used >= 0
+            and not self.collector.is_compacted
+            and not self.collector.has_verified_context
+            and not self.collector.budget_exhausted
+        ):
             self.counters.record_context(used=used)
 
     def _record_final_usage(self, u: Any) -> None:
@@ -247,7 +252,10 @@ class CodexRun:
 
 
 class CodexDriver(CliDriver):
-    """Runs ``codex exec`` with the prompt on stdin, in ``Request.cwd``. The driver never adds an approval or sandbox flag."""
+    """Runs ``codex exec`` with the prompt on stdin, in ``Request.cwd``.
+
+    The driver never adds an approval or sandbox flag.
+    """
 
     name = "codex"
     executable = "codex"
@@ -262,7 +270,9 @@ class CodexDriver(CliDriver):
     def validate(self, req: Request) -> Diagnostic | None:
         token = _cd_flag(req.args)
         if token is not None:
-            return Diagnostic(code="invalid_args", message=f"args cannot set the working directory ({token!r}); use Request.cwd")
+            return Diagnostic(
+                code="invalid_args", message=f"args cannot set the working directory ({token!r}); use Request.cwd"
+            )
         return None
 
     def portable_argv(self, req: Request) -> list[str]:

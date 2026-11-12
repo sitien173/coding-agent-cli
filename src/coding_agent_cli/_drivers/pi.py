@@ -27,7 +27,12 @@ from ._common import (
 from ._usage import TokenCounters
 
 MAX_DIAGNOSTICS = 50
-_PI_USAGE_KEYS = {"input_key": "input", "output_key": "output", "cache_read_key": "cacheRead", "cache_write_key": "cacheWrite"}
+_PI_USAGE_KEYS = {
+    "input_key": "input",
+    "output_key": "output",
+    "cache_read_key": "cacheRead",
+    "cache_write_key": "cacheWrite",
+}
 
 
 def _message_text(message: Any) -> str:

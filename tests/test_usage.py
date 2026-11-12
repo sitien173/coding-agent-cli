@@ -53,12 +53,14 @@ def test_invalid_values_are_ignored() -> None:
 
 
 def test_read_usage_normalizes_input_and_keeps_malformed_components_visible() -> None:
-    usage = read_usage({
-        "input_tokens": 10,
-        "cache_read_input_tokens": 20,
-        "cache_creation_input_tokens": 3,
-        "output_tokens": 4,
-    })
+    usage = read_usage(
+        {
+            "input_tokens": 10,
+            "cache_read_input_tokens": 20,
+            "cache_creation_input_tokens": 3,
+            "output_tokens": 4,
+        }
+    )
     assert (usage.input, usage.output, usage.cache_read, usage.cache_write, usage.observed) == (33, 4, 20, 3, True)
 
     no_input = read_usage({"cache_read_input_tokens": 5})

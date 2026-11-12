@@ -15,7 +15,16 @@ from typing import Any
 
 import pytest
 
-from coding_agent_cli import Diagnostic, DriverRegistry, Outcome, Request, Result, SessionIdentified, TextDelta, ToolCompleted, ToolStarted, Usage, UsageUpdated
+from coding_agent_cli import (
+    Diagnostic,
+    DriverRegistry,
+    Outcome,
+    Result,
+    ToolCompleted,
+    ToolStarted,
+    Usage,
+    UsageUpdated,
+)
 from coding_agent_cli._drivers import agy as agy_module
 from coding_agent_cli._drivers.agy import PROMPT_LIMIT_BYTES, AgyDriver, AgyRun, _prompt_error
 from coding_agent_cli._process import ProcessOutcome
@@ -51,14 +60,25 @@ def temp_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _step(text: str, *, step_index: int = 1, usage: dict[str, Any] | None = None, state: str = "ACTIVE") -> str:
-    update: dict[str, Any] = {"conversation_id": CONVERSATION, "step_index": step_index, "state": state, "step_type": "agent_response", "text_delta": text}
+    update: dict[str, Any] = {
+        "conversation_id": CONVERSATION,
+        "step_index": step_index,
+        "state": state,
+        "step_type": "agent_response",
+        "text_delta": text,
+    }
     if usage is not None:
         update["usage"] = usage
     return json.dumps({"event": "step_update", "step_update": update})
 
 
 def _result(response: str, **fields: object) -> str:
-    return json.dumps({"event": "result", "result": {"conversation_id": CONVERSATION, "status": "SUCCESS", "response": response, **fields}})
+    return json.dumps(
+        {
+            "event": "result",
+            "result": {"conversation_id": CONVERSATION, "status": "SUCCESS", "response": response, **fields},
+        }
+    )
 
 
 def _done(usage: dict[str, Any], **fields: object) -> dict[str, Any]:
@@ -114,7 +134,9 @@ def test_recorded_stream_pins_text_session_and_telemetry(tmp_path: Path, monkeyp
     assert result.usage.context_window is None
 
 
-def test_plain_text_output_is_the_reply_and_stream_regex_supplies_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_plain_text_output_is_the_reply_and_stream_regex_supplies_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     stub_cli(monkeypatch, tmp_path, "agy", ["PONG", f"Created conversation {CONVERSATION}"])
 
     result = _run(tmp_path)
@@ -125,7 +147,13 @@ def test_plain_text_output_is_the_reply_and_stream_regex_supplies_session(tmp_pa
 
 
 def test_log_file_session_wins_over_stream_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    stub_cli(monkeypatch, tmp_path, "agy", [f"Created conversation {OTHER_CONVERSATION}", _step("ok")], log_text=f"Created conversation {CONVERSATION}")
+    stub_cli(
+        monkeypatch,
+        tmp_path,
+        "agy",
+        [f"Created conversation {OTHER_CONVERSATION}", _step("ok")],
+        log_text=f"Created conversation {CONVERSATION}",
+    )
 
     result = _run(tmp_path)
 
@@ -135,7 +163,16 @@ def test_log_file_session_wins_over_stream_session(tmp_path: Path, monkeypatch: 
 def test_first_stream_regex_match_beats_a_later_conversation_id_field() -> None:
     result, _ = _parse(
         f"Created conversation {CONVERSATION}",
-        json.dumps({"event": "step_update", "step_update": {"conversation_id": OTHER_CONVERSATION, "step_type": "agent_response", "text_delta": "x"}}),
+        json.dumps(
+            {
+                "event": "step_update",
+                "step_update": {
+                    "conversation_id": OTHER_CONVERSATION,
+                    "step_type": "agent_response",
+                    "text_delta": "x",
+                },
+            }
+        ),
     )
 
     assert result.session_id == CONVERSATION
@@ -162,7 +199,9 @@ def test_nonzero_exit_keeps_partial_reply_as_execution_error(tmp_path: Path, mon
     assert result.returncode == 2
 
 
-def test_exit_zero_plain_text_is_the_reply_even_with_an_auth_keyword(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_exit_zero_plain_text_is_the_reply_even_with_an_auth_keyword(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     stub_cli(monkeypatch, tmp_path, "agy", ["not logged in"])
 
     result = _run(tmp_path)
@@ -192,7 +231,9 @@ def test_timeout_is_retryable_timeout_and_keeps_partial_text(tmp_path: Path, mon
 
 
 @pytest.mark.asyncio
-async def test_cancel_before_start_is_cancelled_and_spawns_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_cancel_before_start_is_cancelled_and_spawns_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "agy", [_step("never")], record=record)
     cancel = asyncio.Event()
@@ -240,11 +281,36 @@ def test_non_utf8_output_does_not_truncate_later_lines(tmp_path: Path, monkeypat
             Usage(input=10, output=5, context_used=13, context_window=100),
             id="input-output-thinking-and-window",
         ),
-        pytest.param({"input_tokens": 10, "output_tokens": 5}, {}, Usage(input=10, output=5, context_used=15), id="no-thinking-no-window"),
-        pytest.param({"input_tokens": 1, "output_tokens": 1, "thinking_tokens": 9}, {}, Usage(input=1, output=1), id="negative-context-is-skipped"),
-        pytest.param({"cache_read_tokens": 4, "cache_write_tokens": 3}, {}, Usage(cache_read=4, cache_write=3), id="cache-only-has-no-context-used"),
-        pytest.param({"input_tokens": 2}, {"model_context_window": 50}, Usage(input=2, context_window=50), id="input-without-output-skips-context-used"),
-        pytest.param({"input_tokens": 2, "output_tokens": 3}, {"context_window_size": 64}, Usage(input=2, output=3, context_used=5, context_window=64), id="window-falls-back-to-the-update"),
+        pytest.param(
+            {"input_tokens": 10, "output_tokens": 5},
+            {},
+            Usage(input=10, output=5, context_used=15),
+            id="no-thinking-no-window",
+        ),
+        pytest.param(
+            {"input_tokens": 1, "output_tokens": 1, "thinking_tokens": 9},
+            {},
+            Usage(input=1, output=1),
+            id="negative-context-is-skipped",
+        ),
+        pytest.param(
+            {"cache_read_tokens": 4, "cache_write_tokens": 3},
+            {},
+            Usage(cache_read=4, cache_write=3),
+            id="cache-only-has-no-context-used",
+        ),
+        pytest.param(
+            {"input_tokens": 2},
+            {"model_context_window": 50},
+            Usage(input=2, context_window=50),
+            id="input-without-output-skips-context-used",
+        ),
+        pytest.param(
+            {"input_tokens": 2, "output_tokens": 3},
+            {"context_window_size": 64},
+            Usage(input=2, output=3, context_used=5, context_window=64),
+            id="window-falls-back-to-the-update",
+        ),
         pytest.param(
             {"input_tokens": 2, "output_tokens": 3, "model_context_window": 10, "context_window_size": 20},
             {"context_window_size": 30},
@@ -253,7 +319,9 @@ def test_non_utf8_output_does_not_truncate_later_lines(tmp_path: Path, monkeypat
         ),
     ],
 )
-def test_done_step_usage_updates_counters_and_emits_one_usage_event(usage: dict[str, Any], fields: dict[str, Any], expected: Usage) -> None:
+def test_done_step_usage_updates_counters_and_emits_one_usage_event(
+    usage: dict[str, Any], fields: dict[str, Any], expected: Usage
+) -> None:
     run, events = _feed_updates(_done(usage, **fields))
 
     assert run.counters.usage() == expected
@@ -267,7 +335,9 @@ def test_done_step_usage_updates_counters_and_emits_one_usage_event(usage: dict[
         pytest.param({"step_type": "agent_response", "state": "ACTIVE", "usage": {"input_tokens": 1}}, id="not-done"),
         pytest.param({"step_type": "agent_response", "state": "DONE", "usage": "x"}, id="usage-not-a-dict"),
         pytest.param({"step_type": "agent_response", "state": "DONE"}, id="no-usage"),
-        pytest.param(_done({"input_tokens": -1, "output_tokens": True, "cache_read_tokens": "7"}), id="no-valid-counts"),
+        pytest.param(
+            _done({"input_tokens": -1, "output_tokens": True, "cache_read_tokens": "7"}), id="no-valid-counts"
+        ),
     ],
 )
 def test_step_without_usable_usage_leaves_counters_and_events_alone(update: dict[str, Any]) -> None:
@@ -338,7 +408,9 @@ def test_capacity_remains_null_without_explicit_metadata() -> None:
 
 def test_explicit_context_metadata_is_recorded() -> None:
     result, _ = _parse(
-        _step("Working", usage={"input_tokens": 800, "output_tokens": 120, "model_context_window": 200000}).replace("ACTIVE", "DONE"),
+        _step("Working", usage={"input_tokens": 800, "output_tokens": 120, "model_context_window": 200000}).replace(
+            "ACTIVE", "DONE"
+        ),
         _result("Done", usage={"input_tokens": 800, "output_tokens": 120, "model_context_window": 200000}),
     )
 
@@ -395,7 +467,10 @@ def test_prompt_over_100_kib_fails_before_spawn(tmp_path: Path, monkeypatch: pyt
     assert result.outcome == Outcome.REQUEST_FATAL
     assert result.error == Diagnostic(
         code="invalid_prompt",
-        message=f"agy prompt is {PROMPT_LIMIT_BYTES + 1} bytes, above the 100 KiB ({PROMPT_LIMIT_BYTES} bytes) limit for the prompt argument",
+        message=(
+            f"agy prompt is {PROMPT_LIMIT_BYTES + 1} bytes, "
+            f"above the 100 KiB ({PROMPT_LIMIT_BYTES} bytes) limit for the prompt argument"
+        ),
     )
     assert not record.exists()
 
@@ -426,7 +501,9 @@ def test_prompt_at_exactly_100_kib_is_spawned(tmp_path: Path, monkeypatch: pytes
     assert record.exists()
 
 
-def test_prompt_inside_the_windows_command_line_limit_is_spawned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_prompt_inside_the_windows_command_line_limit_is_spawned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "agy", ["ok"], record=record)
     monkeypatch.setattr(agy_module, "_WINDOWS", True)
@@ -453,8 +530,12 @@ def test_windows_command_line_over_the_limit_is_request_fatal_and_removes_the_lo
     assert list(temp_dir.iterdir()) == []
 
 
-@pytest.mark.parametrize("prompt", [pytest.param("a\x00b", id="nul"), pytest.param("bad \ud800 prompt", id="surrogate")])
-def test_unencodable_prompt_is_request_fatal_and_keeps_the_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prompt: str) -> None:
+@pytest.mark.parametrize(
+    "prompt", [pytest.param("a\x00b", id="nul"), pytest.param("bad \ud800 prompt", id="surrogate")]
+)
+def test_unencodable_prompt_is_request_fatal_and_keeps_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prompt: str
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "agy", ["never"], record=record)
 
@@ -469,7 +550,9 @@ def test_unencodable_prompt_is_request_fatal_and_keeps_the_session(tmp_path: Pat
 # --- Argv policy and transport ---
 
 
-def test_resume_argv_carries_conversation_prompt_and_log_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path) -> None:
+def test_resume_argv_carries_conversation_prompt_and_log_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "agy", ["ok"], record=record)
 
@@ -483,7 +566,9 @@ def test_resume_argv_carries_conversation_prompt_and_log_file(tmp_path: Path, mo
     assert seen["stdin"] == ""
 
 
-def test_new_session_argv_uses_new_project_and_places_args_before_the_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_new_session_argv_uses_new_project_and_places_args_before_the_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Rewritten: Refract put --dangerously-skip-permissions first. The Phase 5 invariant removes it.
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "agy", ["ok"], record=record)
@@ -498,7 +583,9 @@ def test_new_session_argv_uses_new_project_and_places_args_before_the_prompt(tmp
 
 
 @pytest.mark.asyncio
-async def test_cd_is_not_owned_by_agy_and_passes_through_as_a_caller_arg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_cd_is_not_owned_by_agy_and_passes_through_as_a_caller_arg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Refract forwarded --cd unchanged for agy. The process cwd still comes from Request.cwd.
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "agy", ["ok"], record=record)
@@ -521,7 +608,9 @@ def test_model_maps_to_the_model_flag_before_caller_args(tmp_path: Path, monkeyp
 @pytest.mark.parametrize("model", [None, "m"])
 @pytest.mark.parametrize("session_id", [None, CONVERSATION])
 @pytest.mark.parametrize("args", [(), ("--x",)])
-def test_no_permission_or_sandbox_flag_is_ever_added(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str | None, session_id: str | None, args: tuple[str, ...]) -> None:
+def test_no_permission_or_sandbox_flag_is_ever_added(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str | None, session_id: str | None, args: tuple[str, ...]
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "agy", ["ok"], record=record)
 
@@ -534,7 +623,9 @@ def test_no_permission_or_sandbox_flag_is_ever_added(tmp_path: Path, monkeypatch
 
 @pytest.mark.parametrize("args", OWNED_ARGS)
 @pytest.mark.asyncio
-async def test_raw_args_cannot_override_a_driver_owned_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]) -> None:
+async def test_raw_args_cannot_override_a_driver_owned_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "agy", ["never"], record=record)
 
@@ -546,7 +637,9 @@ async def test_raw_args_cannot_override_a_driver_owned_flag(tmp_path: Path, monk
 
 
 @pytest.mark.asyncio
-async def test_model_flag_in_args_conflicts_with_the_model_option(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_model_flag_in_args_conflicts_with_the_model_option(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "agy", ["never"], record=record)
 
@@ -565,7 +658,9 @@ async def test_model_flag_in_args_conflicts_with_the_model_option(tmp_path: Path
     ],
 )
 @pytest.mark.asyncio
-async def test_reasoning_and_system_prompt_are_unsupported_and_spawn_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, Any]) -> None:
+async def test_reasoning_and_system_prompt_are_unsupported_and_spawn_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, Any]
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "agy", ["never"], record=record)
 
@@ -589,7 +684,9 @@ async def test_missing_workspace_is_rejected_before_spawn(tmp_path: Path, monkey
 
 
 @pytest.mark.asyncio
-async def test_temporary_log_file_is_removed_on_success_and_on_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path) -> None:
+async def test_temporary_log_file_is_removed_on_success_and_on_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "agy", [_step("ok")], record=record)
     await run_driver("agy", tmp_path)
@@ -602,7 +699,9 @@ async def test_temporary_log_file_is_removed_on_success_and_on_timeout(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_log_file_session_is_read_from_the_cli_written_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path) -> None:
+async def test_log_file_session_is_read_from_the_cli_written_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path
+) -> None:
     stub_cli(monkeypatch, tmp_path, "agy", [_step("ok")], log_text=f"Created conversation {CONVERSATION}")
 
     result = await run_driver("agy", tmp_path)

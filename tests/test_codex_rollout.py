@@ -27,8 +27,16 @@ def _header(session_id: str, cwd: Path) -> dict[str, Any]:
     return {"type": "session_meta", "payload": {"id": session_id, "cwd": str(cwd)}}
 
 
-def _token(input_tokens: int = 500, output_tokens: int = 20, reasoning: int = 5, window: int | None = 8000) -> dict[str, Any]:
-    info: dict[str, Any] = {"last_token_usage": {"input_tokens": input_tokens, "output_tokens": output_tokens, "reasoning_output_tokens": reasoning}}
+def _token(
+    input_tokens: int = 500, output_tokens: int = 20, reasoning: int = 5, window: int | None = 8000
+) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "last_token_usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "reasoning_output_tokens": reasoning,
+        }
+    }
     if window is not None:
         info["model_context_window"] = window
     return {"type": "event_msg", "payload": {"type": "token_count", "info": info}}
@@ -94,7 +102,9 @@ class Probe:
 
 
 @pytest.mark.asyncio
-async def test_codex_rollout_exact_session_enrichment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ws: Path, home: Path) -> None:
+async def test_codex_rollout_exact_session_enrichment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ws: Path, home: Path
+) -> None:
     _write(_rollout_path(home), _header(SID, ws))
     stub_cli(
         monkeypatch,
@@ -103,7 +113,12 @@ async def test_codex_rollout_exact_session_enrichment(tmp_path: Path, monkeypatc
         [
             json.dumps({"type": "thread.started", "thread_id": SID}),
             json.dumps({"type": "item.completed", "item": {"id": "item_1", "type": "agent_message", "text": "OK"}}),
-            json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1000, "output_tokens": 50, "cached_input_tokens": 200}}),
+            json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 1000, "output_tokens": 50, "cached_input_tokens": 200},
+                }
+            ),
         ],
     )
 
@@ -115,7 +130,9 @@ async def test_codex_rollout_exact_session_enrichment(tmp_path: Path, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_rollout_token_count_wins_over_turn_consumption_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ws: Path, home: Path) -> None:
+async def test_rollout_token_count_wins_over_turn_consumption_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ws: Path, home: Path
+) -> None:
     _write(_rollout_path(home), _header(SID, ws), _token(500, 20, 5, 8000))
     stub_cli(
         monkeypatch,
@@ -135,7 +152,9 @@ async def test_rollout_token_count_wins_over_turn_consumption_snapshot(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_rollout_supplies_the_model_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ws: Path, home: Path) -> None:
+async def test_rollout_supplies_the_model_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ws: Path, home: Path
+) -> None:
     _write(_rollout_path(home), _header(SID, ws), _model("gpt-test"))
     stub_cli(
         monkeypatch,
@@ -153,7 +172,9 @@ async def test_rollout_supplies_the_model_name(tmp_path: Path, monkeypatch: pyte
 
 
 @pytest.mark.asyncio
-async def test_codex_home_from_request_env_wins_over_os_environ(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ws: Path, home: Path) -> None:
+async def test_codex_home_from_request_env_wins_over_os_environ(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ws: Path, home: Path
+) -> None:
     # os.environ points at an empty home. The rollout exists only under the request's CODEX_HOME.
     empty_home = tmp_path / "empty-home"
     (empty_home / "sessions").mkdir(parents=True)
@@ -175,7 +196,9 @@ async def test_codex_home_from_request_env_wins_over_os_environ(tmp_path: Path, 
 
 
 @pytest.mark.asyncio
-async def test_os_environ_codex_home_is_ignored_when_request_env_overrides_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ws: Path, home: Path) -> None:
+async def test_os_environ_codex_home_is_ignored_when_request_env_overrides_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ws: Path, home: Path
+) -> None:
     _write(_rollout_path(home), _header(SID, ws), _token(500, 20, 5, 8000))
     monkeypatch.setenv("CODEX_HOME", str(home))
     empty_home = tmp_path / "empty-home"
@@ -236,7 +259,9 @@ def test_codex_rollout_session_meta_mid_file_for_another_session_stops_verificat
     "content",
     [
         pytest.param("not json at all\n", id="non-json-header"),
-        pytest.param(json.dumps({"type": "event_msg", "payload": {"id": SID, "cwd": "x"}}) + "\n", id="not-session-meta"),
+        pytest.param(
+            json.dumps({"type": "event_msg", "payload": {"id": SID, "cwd": "x"}}) + "\n", id="not-session-meta"
+        ),
         pytest.param("", id="empty"),
     ],
 )
@@ -287,7 +312,9 @@ def test_codex_rollout_discovery_finds_a_file_at_the_depth_limit(ws: Path, home:
 
 
 @pytest.mark.parametrize("session_id", ["", "not-a-uuid", "../escape"])
-def test_codex_rollout_discovery_rejects_invalid_session_id_without_retry(ws: Path, home: Path, session_id: str) -> None:
+def test_codex_rollout_discovery_rejects_invalid_session_id_without_retry(
+    ws: Path, home: Path, session_id: str
+) -> None:
     probe = Probe(ws, home, session_id=session_id)
 
     probe.poll()
@@ -542,7 +569,9 @@ def test_codex_rollout_model_records_update_model_name(ws: Path, home: Path) -> 
 
 
 def test_codex_rollout_unrecognized_records_change_nothing(ws: Path, home: Path) -> None:
-    _write(_rollout_path(home), _header(SID, ws), {"type": "unknown"}, {"type": "event_msg", "payload": {"type": "other"}})
+    _write(
+        _rollout_path(home), _header(SID, ws), {"type": "unknown"}, {"type": "event_msg", "payload": {"type": "other"}}
+    )
 
     probe = Probe(ws, home)
     usage = probe.poll()
@@ -562,7 +591,9 @@ def test_codex_rollout_token_count_without_usable_fields_is_ignored(ws: Path, ho
     assert Probe(ws, home).poll().context_used is None
 
 
-def test_codex_rollout_stat_failure_after_discovery_is_not_fatal(ws: Path, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_codex_rollout_stat_failure_after_discovery_is_not_fatal(
+    ws: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _write(_rollout_path(home), _header(SID, ws), _token())
     probe = Probe(ws, home)
     probe.poll()

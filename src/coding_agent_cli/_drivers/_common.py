@@ -95,7 +95,9 @@ def parse_token_component(usage: dict[str, Any], key: str) -> tuple[int | None, 
 
 @dataclass(slots=True, frozen=True)
 class TokenUsage:
-    """Normalized usage. ``input`` is raw input plus cache reads and writes, or None when the raw input is absent or malformed.
+    """Normalized usage.
+
+    ``input`` is raw input plus cache reads and writes, or None when the raw input is absent or malformed.
 
     ``observed`` is True when any component was present or malformed.
     """
@@ -250,7 +252,11 @@ class CliDriver:
         if executable is None:
             name = req.executable or self.executable
             verdict = classify(
-                Facts(cancelled=cancel.is_set(), process_error="missing_cli", process_message=f"{name!r} was not found on PATH")
+                Facts(
+                    cancelled=cancel.is_set(),
+                    process_error="missing_cli",
+                    process_message=f"{name!r} was not found on PATH",
+                )
             )
             return Result(outcome=verdict.outcome, session_id=req.session_id, error=verdict.error)
         return cwd, executable

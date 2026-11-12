@@ -18,7 +18,6 @@ from coding_agent_cli import (
     Diagnostic,
     DriverRegistry,
     Outcome,
-    Request,
     Result,
     SessionIdentified,
     TextDelta,
@@ -190,7 +189,9 @@ def test_blank_last_message_falls_back_to_agent_items(tmp_path: Path) -> None:
 # --- Outcome classification ---
 
 
-def test_nonzero_exit_with_agent_message_is_retryable_execution_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_nonzero_exit_with_agent_message_is_retryable_execution_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     stub_cli(monkeypatch, tmp_path, "codex", [_thread(SESSION), _message("partial")], exit_code=2)
 
     result = _run(tmp_path)
@@ -202,7 +203,8 @@ def test_nonzero_exit_with_agent_message_is_retryable_execution_error(tmp_path: 
 
 
 def test_auth_diagnostic_beats_a_nonzero_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Rewritten: Refract mapped this to execution_error. The Phase 5 invariant makes an auth diagnostic win over the exit code.
+    # Rewritten: Refract mapped this to execution_error.
+    # The Phase 5 invariant makes an auth diagnostic win over the exit code.
     stub_cli(monkeypatch, tmp_path, "codex", ["error: unknown option, not logged in"], exit_code=2)
 
     result = _run(tmp_path)
@@ -228,7 +230,9 @@ def test_fatal_token_with_agent_message_does_not_fail_the_run(tmp_path: Path) ->
     assert result.text == "answer"
 
 
-def test_fatal_token_in_diagnostic_without_agent_message_is_agent_fatal_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fatal_token_in_diagnostic_without_agent_message_is_agent_fatal_auth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Rewritten: Refract returned TARGET_FATAL fatal_backend. The auth keyword now maps to agent_fatal with code auth.
     stub_cli(monkeypatch, tmp_path, "codex", ["Error: not logged in"])
 
@@ -238,7 +242,9 @@ def test_fatal_token_in_diagnostic_without_agent_message_is_agent_fatal_auth(tmp
     assert result.error == Diagnostic(code="auth", message="Error: not logged in")
 
 
-def test_exit_zero_without_agent_message_is_no_output_and_never_returns_jsonl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_exit_zero_without_agent_message_is_no_output_and_never_returns_jsonl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Rewritten: Refract returned request_fatal. The Phase 5 invariant maps empty output to no_output.
     stub_cli(monkeypatch, tmp_path, "codex", [_thread(SESSION), _turn()])
 
@@ -299,14 +305,18 @@ def test_item_completed_emits_text_and_tool_completion_events(tmp_path: Path) ->
 
 
 def test_item_completion_without_start_uses_fallback_entity_ids(tmp_path: Path) -> None:
-    _, events = _feed(_event(type="item.completed", item={"id": "orphan", "type": "tool_call", "status": "completed"}), cwd=tmp_path)
+    _, events = _feed(
+        _event(type="item.completed", item={"id": "orphan", "type": "tool_call", "status": "completed"}), cwd=tmp_path
+    )
 
     assert events == [ToolCompleted(status="completed", entity_id="tool-1")]
 
 
 @pytest.mark.parametrize("item", [None, "text", 3, ["x"]])
 def test_non_object_item_is_ignored(tmp_path: Path, item: object) -> None:
-    result, events = _parse(_event(type="item.started", item=item), _event(type="item.completed", item=item), cwd=tmp_path)
+    result, events = _parse(
+        _event(type="item.started", item=item), _event(type="item.completed", item=item), cwd=tmp_path
+    )
 
     assert events == []
     assert result.outcome == Outcome.RETRYABLE
@@ -427,7 +437,9 @@ def test_toml_string_quotes_and_escapes_control_characters() -> None:
 # --- Transport: argv, stdin, cwd, temporary file ---
 
 
-def test_resume_argv_and_prompt_delivery_are_pinned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path) -> None:
+def test_resume_argv_and_prompt_delivery_are_pinned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "codex", [_thread(SESSION), _message("ok")], record=record)
 
@@ -454,7 +466,9 @@ def test_driver_never_passes_a_working_directory_flag(tmp_path: Path, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_portable_options_map_to_codex_flags_before_caller_args(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path) -> None:
+async def test_portable_options_map_to_codex_flags_before_caller_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "codex", [_message("ok")], record=record)
 
@@ -475,7 +489,9 @@ def test_reasoning_value_is_toml_quoted_in_the_config_flag(tmp_path: Path, monke
     assert argv[argv.index("-c") + 1] == 'model_reasoning_effort="h\\"igh"'
 
 
-def test_caller_args_pass_through_and_lowercase_config_flag_is_allowed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_caller_args_pass_through_and_lowercase_config_flag_is_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "codex", [_message("ok")], record=record)
 
@@ -496,7 +512,9 @@ def test_caller_args_pass_through_and_lowercase_config_flag_is_allowed(tmp_path:
         pytest.param({"model": "m", "reasoning": "high", "session_id": OTHER, "args": ("--x",)}, id="all"),
     ],
 )
-def test_no_approval_sandbox_or_bypass_flag_is_ever_added(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, Any]) -> None:
+def test_no_approval_sandbox_or_bypass_flag_is_ever_added(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, Any]
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "codex", [_message("ok")], record=record)
 
@@ -517,7 +535,9 @@ def test_no_approval_sandbox_or_bypass_flag_is_ever_added(tmp_path: Path, monkey
     ],
 )
 @pytest.mark.asyncio
-async def test_working_directory_args_are_rejected_before_spawn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]) -> None:
+async def test_working_directory_args_are_rejected_before_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "codex", ["never"], record=record)
 
@@ -537,7 +557,9 @@ async def test_working_directory_args_are_rejected_before_spawn(tmp_path: Path, 
     ],
 )
 @pytest.mark.asyncio
-async def test_raw_args_cannot_override_a_driver_owned_transport_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]) -> None:
+async def test_raw_args_cannot_override_a_driver_owned_transport_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "codex", ["never"], record=record)
 
@@ -558,7 +580,9 @@ async def test_raw_args_cannot_override_a_driver_owned_transport_flag(tmp_path: 
     ],
 )
 @pytest.mark.asyncio
-async def test_raw_args_cannot_conflict_with_a_portable_option(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, Any], args: tuple[str, ...]) -> None:
+async def test_raw_args_cannot_conflict_with_a_portable_option(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, Any], args: tuple[str, ...]
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "codex", ["never"], record=record)
 
@@ -577,7 +601,9 @@ async def test_system_prompt_is_unsupported_and_spawns_nothing(tmp_path: Path, m
     result = await run_driver("codex", tmp_path, system_prompt="sp")
 
     assert result.outcome == Outcome.REQUEST_FATAL
-    assert result.error == Diagnostic(code="unsupported_option", message="driver 'codex' does not support system_prompt")
+    assert result.error == Diagnostic(
+        code="unsupported_option", message="driver 'codex' does not support system_prompt"
+    )
     assert not record.exists()
 
 
@@ -595,7 +621,9 @@ async def test_bad_cwd_is_rejected_before_spawn(tmp_path: Path, monkeypatch: pyt
 
 @pytest.mark.parametrize("args", [pytest.param(("--",), id="dashdash"), pytest.param(("a\x00",), id="nul")])
 @pytest.mark.asyncio
-async def test_invalid_raw_args_are_rejected_before_spawn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]) -> None:
+async def test_invalid_raw_args_are_rejected_before_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "codex", ["never"], record=record)
 
@@ -618,7 +646,9 @@ async def test_env_values_and_prompt_never_reach_argv(tmp_path: Path, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_cancel_before_start_is_cancelled_and_spawns_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_cancel_before_start_is_cancelled_and_spawns_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "codex", ["never"], record=record)
     cancel = asyncio.Event()
@@ -631,7 +661,9 @@ async def test_cancel_before_start_is_cancelled_and_spawns_nothing(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_temporary_last_message_file_is_removed_on_success_and_on_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path) -> None:
+async def test_temporary_last_message_file_is_removed_on_success_and_on_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path
+) -> None:
     record = tmp_path / "record.json"
     stub_cli(monkeypatch, tmp_path, "codex", [_message("ok")], record=record)
     await run_driver("codex", tmp_path)
@@ -644,7 +676,9 @@ async def test_temporary_last_message_file_is_removed_on_success_and_on_timeout(
 
 
 @pytest.mark.asyncio
-async def test_last_message_file_is_written_by_the_cli_and_read_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_last_message_file_is_written_by_the_cli_and_read_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     stub_cli(monkeypatch, tmp_path, "codex", [_thread(SESSION)], last_message="final answer")
 
     result = await run_driver("codex", tmp_path)

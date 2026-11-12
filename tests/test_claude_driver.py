@@ -84,11 +84,13 @@ def _stream(event: dict) -> str:
 
 
 def _tool_use_line(index: int, tool_id: str, name: str, command: str) -> str:
-    return _stream({
-        "type": "content_block_start",
-        "index": index,
-        "content_block": {"type": "tool_use", "id": tool_id, "name": name, "input": {"command": command}},
-    })
+    return _stream(
+        {
+            "type": "content_block_start",
+            "index": index,
+            "content_block": {"type": "tool_use", "id": tool_id, "name": name, "input": {"command": command}},
+        }
+    )
 
 
 def _tool_result_line(tool_id: str, *, is_error: bool = False) -> str:
@@ -209,14 +211,22 @@ def test_thinking_deltas_and_non_text_lines_are_never_emitted() -> None:
     _run, _result, events = _parse(
         f"[diagnostic] {secret}",
         json.dumps({"type": "system", "content": f"system prompt with {secret}"}),
-        json.dumps({
-            "type": "stream_event",
-            "event": {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": secret}, "index": 0},
-        }),
-        json.dumps({
-            "type": "stream_event",
-            "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Clean"}, "index": 1},
-        }),
+        json.dumps(
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": secret},
+                    "index": 0,
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "stream_event",
+                "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Clean"}, "index": 1},
+            }
+        ),
     )
 
     assert events == [TextDelta(text="Clean", entity_id="msg-1")]
@@ -226,18 +236,33 @@ def test_thinking_deltas_and_non_text_lines_are_never_emitted() -> None:
 def test_nested_tool_input_is_preserved_and_missing_or_null_input_is_none() -> None:
     nested = {"nested": {"key": [1, 2.5, "three", False, True, None, {"deep": True}]}, "empty_list": [], "zero": 0}
     _run, _result, events = _parse(
-        json.dumps({
-            "type": "stream_event",
-            "event": {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t1", "name": "NestedTool", "input": nested}},
-        }),
-        json.dumps({
-            "type": "stream_event",
-            "event": {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t2", "name": "NoInputTool"}},
-        }),
-        json.dumps({
-            "type": "stream_event",
-            "event": {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t3", "name": "NullInputTool", "input": None}},
-        }),
+        json.dumps(
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "content_block": {"type": "tool_use", "id": "t1", "name": "NestedTool", "input": nested},
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "content_block": {"type": "tool_use", "id": "t2", "name": "NoInputTool"},
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "content_block": {"type": "tool_use", "id": "t3", "name": "NullInputTool", "input": None},
+                },
+            }
+        ),
     )
 
     assert events == [
@@ -250,15 +275,17 @@ def test_nested_tool_input_is_preserved_and_missing_or_null_input_is_none() -> N
 @pytest.mark.parametrize("bad_cache", [-5, True, float("nan"), float("inf"), "invalid_component"])
 def test_malformed_cache_read_leaves_input_unknown_and_keeps_output(bad_cache: object) -> None:
     _run, result, _events = _parse(
-        json.dumps({
-            "type": "assistant",
-            "message": {
-                "id": "msg-1",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "reply"}],
-                "usage": {"input_tokens": 100, "cache_read_input_tokens": bad_cache, "output_tokens": 20},
-            },
-        }),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "msg-1",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "reply"}],
+                    "usage": {"input_tokens": 100, "cache_read_input_tokens": bad_cache, "output_tokens": 20},
+                },
+            }
+        ),
         json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "reply", "session_id": "c-1"}),
     )
 
@@ -269,14 +296,16 @@ def test_malformed_cache_read_leaves_input_unknown_and_keeps_output(bad_cache: o
 
 def test_malformed_cumulative_cache_write_leaves_input_unknown() -> None:
     _run, result, _events = _parse(
-        json.dumps({
-            "type": "result",
-            "subtype": "success",
-            "is_error": False,
-            "result": "reply",
-            "session_id": "c-2",
-            "usage": {"input_tokens": 120, "cache_creation_input_tokens": -1, "output_tokens": 30},
-        }),
+        json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "result": "reply",
+                "session_id": "c-2",
+                "usage": {"input_tokens": 120, "cache_creation_input_tokens": -1, "output_tokens": 30},
+            }
+        ),
     )
 
     assert result.outcome is Outcome.SUCCESS
@@ -292,11 +321,13 @@ def test_command_activity_allow_list_is_exact_and_case_sensitive() -> None:
 
 
 def test_session_id_on_a_stream_event_wrapper_is_identified_once() -> None:
-    wrapped = json.dumps({
-        "type": "stream_event",
-        "session_id": "abc",
-        "event": {"type": "message_start"},
-    })
+    wrapped = json.dumps(
+        {
+            "type": "stream_event",
+            "session_id": "abc",
+            "event": {"type": "message_start"},
+        }
+    )
 
     _run, _result, events = _parse(wrapped, wrapped)
 
@@ -307,18 +338,28 @@ def test_session_id_on_a_stream_event_wrapper_is_identified_once() -> None:
 
 
 def test_http_500_result_is_retryable_service_error() -> None:
-    _run, result, _events = _parse(_result_line(
-        is_error=True, subtype="error_during_execution", result="boom", api_error_status=500,
-    ))
+    _run, result, _events = _parse(
+        _result_line(
+            is_error=True,
+            subtype="error_during_execution",
+            result="boom",
+            api_error_status=500,
+        )
+    )
 
     assert result.outcome is Outcome.RETRYABLE
     assert result.error == Diagnostic(code="service_error", message="boom\napi_error_status=500")
 
 
 def test_http_401_result_is_agent_fatal_auth() -> None:
-    _run, result, _events = _parse(_result_line(
-        is_error=True, subtype="error_during_execution", result="denied", api_error_status=401,
-    ))
+    _run, result, _events = _parse(
+        _result_line(
+            is_error=True,
+            subtype="error_during_execution",
+            result="denied",
+            api_error_status=401,
+        )
+    )
 
     assert result.outcome is Outcome.AGENT_FATAL
     assert result.error is not None and result.error.code == "auth"
@@ -517,9 +558,12 @@ async def test_portable_options_map_to_claude_flags_after_transport_flags(
     assert json.loads(record.read_text(encoding="utf-8"))["argv"] == [
         "claude",
         *TRANSPORT_ARGV,
-        "--system-prompt", "be brief",
-        "--model", "opus",
-        "--effort", "high",
+        "--system-prompt",
+        "be brief",
+        "--model",
+        "opus",
+        "--effort",
+        "high",
         "--x",
     ]
 
@@ -553,7 +597,7 @@ async def test_no_permission_or_approval_flag_is_ever_added(
     )
 
     argv = json.loads(record.read_text(encoding="utf-8"))["argv"]
-    assert argv[1:1 + len(TRANSPORT_ARGV)] == TRANSPORT_ARGV
+    assert argv[1 : 1 + len(TRANSPORT_ARGV)] == TRANSPORT_ARGV
     for flag in FORBIDDEN_FLAGS:
         assert not any(token == flag or token.startswith(f"{flag}=") for token in argv), flag
 
@@ -674,11 +718,15 @@ async def test_failing_sink_kills_the_child_and_surfaces_execution_error(
     async def failing_sink(event: Event) -> None:
         raise RuntimeError("sink failed")
 
-    result = await DriverRegistry().get("claude").run(
-        Request(driver="claude", prompt="p", cwd=tmp_path),
-        on_event=failing_sink,
-        cancel=asyncio.Event(),
-        on_spawn=None,
+    result = (
+        await DriverRegistry()
+        .get("claude")
+        .run(
+            Request(driver="claude", prompt="p", cwd=tmp_path),
+            on_event=failing_sink,
+            cancel=asyncio.Event(),
+            on_spawn=None,
+        )
     )
 
     assert result.outcome is Outcome.RETRYABLE

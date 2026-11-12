@@ -123,7 +123,9 @@ def classify(facts: Facts) -> Classification:
     if facts.request_error is not None:
         return Classification(Outcome.REQUEST_FATAL, facts.request_error)
     if facts.process_error in REQUEST_CODES:
-        return Classification(Outcome.REQUEST_FATAL, Diagnostic(code=facts.process_error, message=facts.process_message))
+        return Classification(
+            Outcome.REQUEST_FATAL, Diagnostic(code=facts.process_error, message=facts.process_message)
+        )
     # Row 4
     if facts.process_error in SPAWN_CODES:
         return Classification(Outcome.AGENT_FATAL, Diagnostic(code=facts.process_error, message=facts.process_message))
@@ -133,7 +135,9 @@ def classify(facts: Facts) -> Classification:
         return Classification(_CLI_OUTCOMES[cli.code], cli)
     # Row 8
     if facts.process_error == "timeout":
-        return Classification(Outcome.RETRYABLE, Diagnostic(code="timeout", message=facts.process_message or "run timed out"))
+        return Classification(
+            Outcome.RETRYABLE, Diagnostic(code="timeout", message=facts.process_message or "run timed out")
+        )
     if cli is not None:
         return Classification(Outcome.RETRYABLE, cli)
     # Row 10
@@ -145,7 +149,10 @@ def classify(facts: Facts) -> Classification:
     if facts.returncode:
         return Classification(
             Outcome.RETRYABLE,
-            Diagnostic(code="execution_error", message=_message(f"command exited with status {facts.returncode}", facts.diagnostics)),
+            Diagnostic(
+                code="execution_error",
+                message=_message(f"command exited with status {facts.returncode}", facts.diagnostics),
+            ),
         )
     if not facts.text.strip():
         return Classification(
@@ -154,7 +161,9 @@ def classify(facts: Facts) -> Classification:
         )
     # Row 11
     if not facts.session_id:
-        return Classification(Outcome.SUCCESS, None, (Diagnostic(code="no_session_id", message="the CLI reported no session ID"),))
+        return Classification(
+            Outcome.SUCCESS, None, (Diagnostic(code="no_session_id", message="the CLI reported no session ID"),)
+        )
     return Classification(Outcome.SUCCESS, None)
 
 

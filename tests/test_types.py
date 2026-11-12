@@ -34,7 +34,7 @@ def test_value_types_are_frozen(value: object, field: str) -> None:
 
 def test_value_types_reject_new_attributes() -> None:
     with pytest.raises((dataclasses.FrozenInstanceError, AttributeError, TypeError)):
-        setattr(Usage(), "extra", 1)
+        setattr(Usage(), "extra", 1)  # noqa: B010 - pyright rejects the direct assignment this test exercises
 
 
 def test_request_env_is_an_immutable_copy() -> None:
@@ -74,15 +74,26 @@ def test_defaults() -> None:
     result = Result(outcome=Outcome.SUCCESS)
     assert result.usage == Usage()
     assert result.warnings == ()
-    assert Usage() == Usage(input=None, output=None, cache_read=None, cache_write=None, context_used=None, context_window=None)
+    assert Usage() == Usage(
+        input=None, output=None, cache_read=None, cache_write=None, context_used=None, context_window=None
+    )
     assert Capabilities(available=False).structured_streaming is None
 
 
 def test_field_names_match_design() -> None:
     names = lambda cls: [f.name for f in dataclasses.fields(cls)]  # noqa: E731
     assert names(Request) == [
-        "driver", "prompt", "cwd", "session_id", "model", "reasoning",
-        "system_prompt", "args", "env", "timeout_s", "executable",
+        "driver",
+        "prompt",
+        "cwd",
+        "session_id",
+        "model",
+        "reasoning",
+        "system_prompt",
+        "args",
+        "env",
+        "timeout_s",
+        "executable",
     ]
     assert names(Result) == ["outcome", "text", "session_id", "model", "usage", "returncode", "error", "warnings"]
     assert names(Usage) == ["input", "output", "cache_read", "cache_write", "context_used", "context_window"]

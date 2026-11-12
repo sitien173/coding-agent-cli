@@ -35,7 +35,9 @@ def reject_transport_flags(args: Sequence[str], owned: Iterable[str]) -> Diagnos
     token = _has_flag(args, owned)
     if token is None:
         return None
-    return Diagnostic(code="invalid_args", message=f"args cannot override the driver-owned flag {token.split('=', 1)[0]!r}")
+    return Diagnostic(
+        code="invalid_args", message=f"args cannot override the driver-owned flag {token.split('=', 1)[0]!r}"
+    )
 
 
 def reject_unsupported(req: Request, supported: Iterable[str]) -> Diagnostic | None:

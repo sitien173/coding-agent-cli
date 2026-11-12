@@ -112,7 +112,7 @@ async def kill_process_tree(process_id: int, *, grace_s: float = TERM_GRACE_S) -
     if not _signal_group(process_id, signal.SIGTERM):
         return
     deadline = time.monotonic() + max(0.0, grace_s)
-    while _group_exists(process_id) and time.monotonic() < deadline:
+    while _group_exists(process_id) and time.monotonic() < deadline:  # noqa: ASYNC110 - no event signals group exit
         await asyncio.sleep(_POLL_S)
     if _group_exists(process_id):
         _signal_group(process_id, signal.SIGKILL)
