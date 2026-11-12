@@ -11,6 +11,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -19,6 +20,26 @@ from typing import Any
 TERM_GRACE_S = 1.0
 _POLL_S = 0.05
 _TASKKILL_TIMEOUT_S = 5.0
+
+if sys.platform == "win32":
+    from ctypes import WinDLL, c_void_p, wintypes
+
+    _PROCESS_TERMINATE = 0x0001
+    _PROCESS_SET_QUOTA = 0x0100
+    _kernel32 = WinDLL("kernel32", use_last_error=True)
+    _kernel32.CreateJobObjectW.argtypes = (c_void_p, wintypes.LPCWSTR)
+    _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    _kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    _kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    _kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _kernel32.TerminateJobObject.restype = wintypes.BOOL
+    _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+
+# Windows job object handle per tracked process ID.
+_jobs: dict[int, int] = {}
 
 
 def prepare_command(command: list[str]) -> list[str]:
@@ -59,6 +80,28 @@ def process_group_kwargs() -> Mapping[str, Any]:
     if os.name == "nt":
         return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
     return {"start_new_session": True}
+
+
+def track_process_tree(process_id: int) -> None:
+    """Put a Windows process in a job object so descendants it orphans can still be killed.
+
+    ``taskkill /T`` finds descendants through their parent, so it misses a grandchild
+    whose parent already exited. A job holds every descendant started after this call.
+    No-op on POSIX, where the process group covers this.
+    """
+    if sys.platform != "win32":
+        return
+    job = _kernel32.CreateJobObjectW(None, None)
+    if not job:
+        return
+    process = _kernel32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, process_id)
+    assigned = bool(process) and bool(_kernel32.AssignProcessToJobObject(job, process))
+    if process:
+        _kernel32.CloseHandle(process)
+    if assigned:
+        _jobs[process_id] = job
+    else:
+        _kernel32.CloseHandle(job)
 
 
 def _taskkill(process_id: int) -> None:
@@ -104,10 +147,15 @@ async def kill_process_tree(process_id: int, *, grace_s: float = TERM_GRACE_S) -
     """Kill a POSIX process group or a Windows process tree without blocking the loop.
 
     POSIX sends SIGTERM, waits up to ``grace_s`` for the group to go away, then sends
-    SIGKILL. Windows runs ``taskkill /T /F`` in a thread.
+    SIGKILL. Windows terminates the tracked job, or runs ``taskkill /T /F`` in a thread.
     """
-    if os.name == "nt":
-        await asyncio.to_thread(_taskkill, process_id)
+    if sys.platform == "win32":
+        job = _jobs.pop(process_id, None)
+        if job is None:
+            await asyncio.to_thread(_taskkill, process_id)
+            return
+        _kernel32.TerminateJobObject(job, 1)
+        _kernel32.CloseHandle(job)
         return
     if not _signal_group(process_id, signal.SIGTERM):
         return
@@ -118,4 +166,4 @@ async def kill_process_tree(process_id: int, *, grace_s: float = TERM_GRACE_S) -
         _signal_group(process_id, signal.SIGKILL)
 
 
-__all__ = ["kill_process_tree", "prepare_command", "process_group_kwargs"]
+__all__ = ["kill_process_tree", "prepare_command", "process_group_kwargs", "track_process_tree"]

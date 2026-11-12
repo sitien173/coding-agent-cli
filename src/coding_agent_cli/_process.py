@@ -10,7 +10,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
-from ._platform import kill_process_tree, prepare_command, process_group_kwargs
+from ._platform import kill_process_tree, prepare_command, process_group_kwargs, track_process_tree
 
 log = logging.getLogger("coding_agent_cli.process")
 
@@ -311,6 +311,7 @@ async def run_process(
         return ProcessOutcome(error=f"{name} could not be started: {exc.strerror or exc}", error_class="missing_cli")
     except OSError as exc:
         return ProcessOutcome(error=f"{name} could not be started: {exc.strerror or exc}", error_class="spawn_failed")
+    track_process_tree(process.pid)
     log.debug("spawned %s pid=%d", name, process.pid)
     writer = None
     if payload is not None:
