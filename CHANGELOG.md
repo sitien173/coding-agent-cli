@@ -1,7 +1,5 @@
 # Changelog
 
-## Unreleased
-
 ## 0.1.0
 
 First release. Extracted from the CLI-driver layer of Refract.

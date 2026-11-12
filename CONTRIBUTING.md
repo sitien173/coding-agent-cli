@@ -70,14 +70,21 @@ uv run pytest -m live -rP
 
 ## Commits and pull requests
 
-- Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`.
+- Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`. Mark breaking changes with `!`, as in `feat!:`.
+- Pull requests are squash-merged, so the PR title becomes the commit message. A check enforces the Conventional Commits format on PR titles.
 - Keep each pull request to one change. Every changed line should trace to that change.
-- Add a line under `## Unreleased` in `CHANGELOG.md` for any user-visible change.
+- Do not edit `CHANGELOG.md` or the version by hand. Both are generated from commit messages at release time.
 - Fill in the pull request template.
 
 ## Releases
 
-Maintainers release by tagging `vX.Y.Z` on `main`. The release workflow tests, builds, and publishes to PyPI through trusted publishing. The version in `pyproject.toml` must match the tag.
+Releases are automated with [release-please](https://github.com/googleapis/release-please):
+
+1. Each push to `main` updates an open release PR. It bumps the version in `pyproject.toml`, `__init__.py`, and `uv.lock`, and adds the changelog entry.
+2. While the version is below 1.0, `feat:` bumps the minor version and `fix:` bumps the patch version. A breaking change also bumps the minor version.
+3. A maintainer merges the release PR when ready. The workflow tags `vX.Y.Z`, creates the GitHub Release, tests, builds, publishes to PyPI through trusted publishing, and attaches the wheel and sdist to the release.
+
+Publishing waits for approval on the `pypi` environment. Pushing a `vX.Y.Z` tag by hand runs the same build and publish; the tag must match the version in `pyproject.toml`.
 
 ## License
 
