@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "coding-agent-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "Run coding-agent CLIs from Python, stream typed events, and get a classified result."
 readme = "README.md"
 license = "MIT"
