@@ -35,7 +35,7 @@ jobs:
         with:
           ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
       - if: steps.release.outputs.pr
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v10.3.3
       - if: steps.release.outputs.pr
         run: |
           uv lock
@@ -62,7 +62,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ steps.tag.outputs.tag }}
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: "3.12"
       - name: Check tag matches package version
