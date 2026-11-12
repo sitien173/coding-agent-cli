@@ -123,6 +123,7 @@ def _taskkill(process_id: int) -> None:
 
 
 def _group_exists(group_id: int) -> bool:
+    assert sys.platform != "win32"
     try:
         os.killpg(group_id, 0)
     except ProcessLookupError:
@@ -134,6 +135,7 @@ def _group_exists(group_id: int) -> bool:
 
 def _signal_group(group_id: int, sig: int) -> bool:
     """Send ``sig`` to the group. Return False when the group is gone."""
+    assert sys.platform != "win32"
     try:
         os.killpg(group_id, sig)
     except ProcessLookupError:
