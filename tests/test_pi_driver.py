@@ -40,7 +40,7 @@ def test_launch_basic_argv_and_stdin_without_p(tmp_path: Path) -> None:
     driver = PiDriver()
     launch = driver.launch(_req(tmp_path), Path("/usr/bin/pi"), tmp_path)
 
-    assert launch.argv == ("/usr/bin/pi", "--mode", "json")
+    assert launch.argv == (str(Path("/usr/bin/pi")), "--mode", "json")
     assert "-p" not in launch.argv
     assert "--print" not in launch.argv
     assert launch.stdin == b"hello pi"
@@ -60,7 +60,7 @@ def test_launch_portable_flags_and_session_id(tmp_path: Path) -> None:
     launch = driver.launch(req, Path("/usr/bin/pi"), tmp_path)
 
     assert launch.argv == (
-        "/usr/bin/pi",
+        str(Path("/usr/bin/pi")),
         "--mode",
         "json",
         "--session",

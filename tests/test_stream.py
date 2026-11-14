@@ -1,21 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from pathlib import Path
 
 from coding_agent_cli import DriverRegistry, Outcome, Request, RunCompleted, TextDelta, stream
 
+from .procs import pid_running
 from .toy_driver import ToyDriver
 
 
 def wait_gone(pid: int, timeout_s: float = 3) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not pid_running(pid):
             return True
         time.sleep(0.02)
     return False

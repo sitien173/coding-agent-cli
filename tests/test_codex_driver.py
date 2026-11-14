@@ -9,6 +9,7 @@ import pytest
 from coding_agent_cli._drivers.codex import CodexDriver
 from coding_agent_cli.driver import RequestError
 from coding_agent_cli.types import ErrorCode, Request
+from tests.launchers import install_launcher
 
 _FORBIDDEN_PERMISSION_FLAGS = (
     "--dangerously-bypass-approvals-and-sandbox",
@@ -33,7 +34,7 @@ def _req(tmp_path: Path, **overrides: object) -> Request:
 def test_launch_plain_argv_and_stdin(tmp_path: Path) -> None:
     driver = CodexDriver()
     launch = driver.launch(_req(tmp_path), Path("/usr/bin/codex"), tmp_path)
-    assert launch.argv == ("/usr/bin/codex", "exec", "--json", "-")
+    assert launch.argv == (str(Path("/usr/bin/codex")), "exec", "--json", "-")
     assert launch.stdin == b"hello"
     assert launch.read_back == ()
 
@@ -46,7 +47,7 @@ def test_launch_resume_placement(tmp_path: Path) -> None:
         tmp_path,
     )
     assert launch.argv == (
-        "/usr/bin/codex",
+        str(Path("/usr/bin/codex")),
         "exec",
         "resume",
         "--json",
@@ -105,7 +106,7 @@ def test_launch_accepts_unrelated_c_args_with_reasoning(tmp_path: Path) -> None:
         tmp_path,
     )
     assert launch.argv == (
-        "/usr/bin/codex",
+        str(Path("/usr/bin/codex")),
         "exec",
         "--json",
         "-c",
@@ -561,16 +562,14 @@ def test_recorded_codex_replay_and_truncation(tmp_path: Path, scenario: str) -> 
 
 async def test_codex_driver_run_end_to_end(tmp_path: Path) -> None:
     import asyncio
-    import sys
 
     from coding_agent_cli.events import Event, RunCompleted, TextDelta
     from coding_agent_cli.types import Outcome
 
-    script = tmp_path / "fake-codex"
+    script = tmp_path / "fake_codex.py"
     script.write_text(
         "\n".join(
             [
-                f"#!{sys.executable}",
                 "import sys",
                 "sys.stdin.read()",
                 'print(\'{"type": "thread.started", "thread_id": "sess-e2e"}\', flush=True)',
@@ -582,12 +581,12 @@ async def test_codex_driver_run_end_to_end(tmp_path: Path) -> None:
         + "\n",
         encoding="utf-8",
     )
-    script.chmod(0o755)
+    launcher = install_launcher(tmp_path, "codex", script)
 
     seen: list[Event] = []
-    async with asyncio.timeout(1.5):
+    async with asyncio.timeout(10):
         result = await CodexDriver().run(
-            _req(tmp_path, executable=str(script)),
+            _req(tmp_path, executable=str(launcher)),
             on_event=seen.append,
         )
 

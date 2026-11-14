@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import shutil
 import sys
 import time
@@ -12,21 +11,9 @@ import pytest
 
 from coding_agent_cli._transport import ParserFailure, run_transport
 
+from .procs import pid_running
+
 FAKES = Path(__file__).parent / "fixtures" / "fake_cli"
-
-
-def _pid_is_running(pid: int) -> bool:
-    stat_path = Path(f"/proc/{pid}/stat")
-    if stat_path.exists():
-        try:
-            return stat_path.read_text(encoding="utf-8").split(") ", 1)[1][0] != "Z"
-        except (IndexError, OSError):
-            return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
 
 
 def _command(tmp_path: Path, fake: str) -> list[str]:
@@ -100,7 +87,7 @@ async def test_stderr_tail_is_capped_at_64_kib(tmp_path: Path) -> None:
     result = await run_transport(_command(tmp_path, "both_flood.py"), on_line)
 
     assert len(result.stderr_tail.encode("utf-8")) <= 64 * 1024
-    assert result.stderr_tail.endswith("e" * 8191 + "\n")
+    assert result.stderr_tail.replace("\r\n", "\n").endswith("e" * 8191 + "\n")
 
 
 @pytest.mark.asyncio
@@ -281,8 +268,7 @@ async def test_line_callback_exception_is_reraised_after_cleanup(tmp_path: Path)
     with pytest.raises(ValueError, match="callback failed"):
         await run_transport(_command(tmp_path, "sleeper.py"), on_line, on_spawn=on_spawn)
     assert pid
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    assert not pid_running(pid)
 
 
 @pytest.mark.asyncio
@@ -303,7 +289,7 @@ async def test_descendant_is_killed_after_leader_exits(tmp_path: Path) -> None:
     child_pid = int(pid_file.read_text(encoding="utf-8"))
     deadline = time.monotonic() + 1
     while time.monotonic() < deadline:
-        if not _pid_is_running(child_pid):
+        if not pid_running(child_pid):
             break
         await asyncio.sleep(0.01)
     else:
@@ -329,7 +315,7 @@ async def test_cleanup_deadline_reports_incomplete_and_force_kills_descendant(tm
     child_pid = int(pid_file.read_text(encoding="utf-8"))
     deadline = time.monotonic() + 1
     while time.monotonic() < deadline:
-        if not _pid_is_running(child_pid):
+        if not pid_running(child_pid):
             break
         await asyncio.sleep(0.01)
     else:
@@ -397,8 +383,7 @@ async def test_caller_cancellation_is_reraised_after_cleanup(tmp_path: Path) -> 
     with pytest.raises(asyncio.CancelledError):
         await task
     assert pid
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    assert not pid_running(pid)
 
 
 @pytest.mark.asyncio
@@ -444,7 +429,7 @@ async def test_repeated_caller_cancellation_waits_for_descendant_cleanup(
     with pytest.raises(asyncio.CancelledError):
         await task
     assert not premature_exit
-    assert not _pid_is_running(child_pid)
+    assert not pid_running(child_pid)
 
 
 @pytest.mark.asyncio
@@ -515,7 +500,7 @@ async def test_late_on_spawn_failure_after_leader_exit_is_reraised_and_tree_kill
             )
 
     child_pid = int(pid_file.read_text(encoding="utf-8"))
-    assert not _pid_is_running(child_pid)
+    assert not pid_running(child_pid)
 
 
 @pytest.mark.asyncio

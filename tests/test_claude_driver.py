@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from pathlib import Path
 
 import pytest
@@ -22,6 +21,7 @@ from coding_agent_cli.events import (
     UsageUpdated,
 )
 from coding_agent_cli.types import ErrorCode, Outcome, Request
+from tests.launchers import install_launcher
 from tests.replay import FIXTURES, replay, replay_truncated
 
 _PERMISSION_FLAGS = (
@@ -50,7 +50,7 @@ def test_launch_includes_verbose_and_stdin_prompt(tmp_path: Path) -> None:
     launch = driver.launch(req, Path("/usr/bin/claude"), tmp_path)
 
     assert launch.argv == (
-        "/usr/bin/claude",
+        str(Path("/usr/bin/claude")),
         "-p",
         "--output-format",
         "stream-json",
@@ -74,7 +74,7 @@ def test_launch_portable_flags_and_resume(tmp_path: Path) -> None:
     launch = driver.launch(req, Path("/usr/bin/claude"), tmp_path)
 
     assert launch.argv == (
-        "/usr/bin/claude",
+        str(Path("/usr/bin/claude")),
         "-p",
         "--output-format",
         "stream-json",
@@ -532,12 +532,10 @@ async def test_claude_driver_end_to_end_with_fake_cli(tmp_path: Path) -> None:
         "import sys\n_ = sys.stdin.read()\n" + "\n".join(f"print({json.dumps(item)!r})" for item in lines) + "\n",
         encoding="utf-8",
     )
-    wrapper = tmp_path / "claude"
-    wrapper.write_text(f'#!/bin/sh\nexec {sys.executable} {script} "$@"\n', encoding="utf-8")
-    wrapper.chmod(0o755)
+    wrapper = install_launcher(tmp_path, "claude", script)
 
     req = _make_request(tmp_path, executable=str(wrapper))
-    async with asyncio.timeout(1.5):
+    async with asyncio.timeout(10):
         result = await ClaudeDriver().run(req)
 
     assert result.outcome == Outcome.SUCCESS
