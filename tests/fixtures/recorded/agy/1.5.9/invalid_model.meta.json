@@ -1,0 +1,24 @@
+{
+  "cli": "agy",
+  "version": "1.5.9",
+  "version_output": "1.5.9",
+  "scenario": "invalid_model",
+  "argv": [
+    "agy",
+    "--output-format",
+    "stream-json",
+    "--disable-slash-commands",
+    "--log-file",
+    "<REDACTED_PATH>",
+    "--new-project",
+    "--model",
+    "nonexistent-model-xyz-9999",
+    "--print",
+    "<PROMPT>"
+  ],
+  "returncode": 1,
+  "timed_out": false,
+  "cancelled": false,
+  "outcome": "request_fatal",
+  "code": "invalid_model"
+}

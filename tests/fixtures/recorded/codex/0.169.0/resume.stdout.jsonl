@@ -1,0 +1,6 @@
+{"type": "thread.started", "thread_id": "00000000-0000-4000-8000-000000000001"}
+{"type": "item.completed", "item": {"id": "id-0001", "type": "error", "message": "`[features].multi_agent` is deprecated. It still controls the V1 fallback. `[agents].enabled = false` disables subagent tools even when the model selects a subagent version, unless `[features].multi_agent_v2` is enabled."}}
+{"type": "item.completed", "item": {"id": "id-0002", "type": "error", "message": "`[features].multi_agent` is deprecated. It still controls the V1 fallback. `[agents].enabled = false` disables subagent tools even when the model selects a subagent version, unless `[features].multi_agent_v2` is enabled."}}
+{"type": "turn.started"}
+{"type": "item.completed", "item": {"id": "id-0003", "type": "agent_message", "text": "PONG"}}
+{"type": "turn.completed", "usage": {"input_tokens": 30817, "cached_input_tokens": 23040, "cache_write_input_tokens": 0, "output_tokens": 12, "reasoning_output_tokens": 0}}

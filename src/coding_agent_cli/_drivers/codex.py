@@ -1,48 +1,43 @@
-"""Codex CLI driver: JSONL on stdout, the final message in a temporary file, and an exact session ID."""
+"""Codex CLI driver and JSONL stream parser."""
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import os
-import re
-import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, Literal
 
-from .._classify import Facts, keyword_code
-from .._process import ProcessOutcome, run_process
-from ..events import MessageCompleted, MessageStarted, SessionIdentified, TextDelta, ToolCompleted, UsageUpdated
-from ..registry import EventHandler, SpawnHandler
-from ..types import Diagnostic, Request, Result
-from ._common import (
-    CliDriver,
-    Diagnostics,
-    EventBuffer,
-    as_int,
-    build_result,
-    deadline_for,
-    effective_env,
-    parse_json_object,
-    process_facts,
-    read_and_unlink,
-    tool_started,
-    tool_status,
+from .._args import reject_conflicts, reject_transport_flags, reject_unsupported
+from .._classify import keyword_code
+from ..driver import CliDriver, Facts, Launch, Parser, RequestError
+from ..events import (
+    Event,
+    FileChanged,
+    MessageCompleted,
+    MessageStarted,
+    Notice,
+    ReasoningDelta,
+    SessionIdentified,
+    TextDelta,
+    ToolCompleted,
+    ToolStarted,
+    UsageUpdated,
 )
-from ._usage import TokenCounters
-from .codex_rollout import CodexRolloutCollector
+from ..types import Diagnostic, ErrorCode, Request, Usage
+from ._common import as_int
 
-MAX_DIAGNOSTICS = 50
-_SESSION_ID_STDOUT_RE = re.compile(
-    r"^\s*session id:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*$",
-    re.IGNORECASE | re.MULTILINE,
-)
+_OWNED_FLAGS = ("--json",)
+_SUPPORTED_OPTIONS = ("model", "reasoning")
 _TOML_ESCAPES = {'"': '\\"', "\\": "\\\\", "\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r"}
+_FILE_CHANGE_MAP: dict[str, Literal["added", "modified", "deleted"]] = {
+    "add": "added",
+    "update": "modified",
+    "delete": "deleted",
+}
 
 
 def _toml_string(value: str) -> str:
-    """Return ``value`` as a TOML basic string. Control characters and DEL use ``\\uXXXX`` escapes."""
+    """Return ``value`` as a TOML basic string with control characters escaped."""
     parts: list[str] = []
     for char in value:
         if char in _TOML_ESCAPES:
@@ -54,22 +49,8 @@ def _toml_string(value: str) -> str:
     return f'"{"".join(parts)}"'
 
 
-def _session_id_line(text: str) -> str:
-    """Return the ID of the first ``session id: <uuid>`` line in ``text``, or ""."""
-    match = _SESSION_ID_STDOUT_RE.search(text)
-    return match.group(1) if match else ""
-
-
-def _resolve_session_id(thread_session_id: str, last_message: str, stdout_session_id: str) -> str:
-    """Return the first exact session ID from the thread event, the last message, or stdout. No source returns ""."""
-    for value in (thread_session_id.strip(), _session_id_line(last_message), stdout_session_id):
-        if value:
-            return value
-    return ""
-
-
 def _cd_flag(args: tuple[str, ...]) -> str | None:
-    """Return the first raw arg that sets the working directory: ``--cd``, ``--cd=...``, ``-C``, or ``-C...``."""
+    """Return the first raw arg setting the working directory, or ``None``."""
     for token in args:
         if token == "--cd" or token.startswith("--cd="):
             return token
@@ -78,177 +59,308 @@ def _cd_flag(args: tuple[str, ...]) -> str | None:
     return None
 
 
-class CodexRun:
-    """Parse one Codex run line by line with bounded state. Raw lines are never retained.
+def _is_reasoning_override(assignment: str) -> bool:
+    key, sep, _ = assignment.partition("=")
+    return bool(sep) and key.strip() == "model_reasoning_effort"
 
-    The answer is the last-message file when it has text, else the concatenated ``agent_message``
-    items. Diagnostics keep the first ``MAX_DIAGNOSTICS`` non-JSON lines plus the first fatal-token line.
-    """
 
-    def __init__(
-        self,
-        sink: EventHandler,
-        *,
-        cwd: Path,
-        env: Mapping[str, str],
-        requested_session: str | None,
-    ) -> None:
-        self.events = EventBuffer(sink)
-        self.diagnostics = Diagnostics(MAX_DIAGNOSTICS)
-        self.counters = TokenCounters()
-        self.requested_session = requested_session or ""
-        self.thread_session_id = ""
-        self.stdout_session_id = ""
-        self.agent_messages: list[str] = []
-        self.entity_counter = 0
-        self.raw_to_entity: dict[str, str] = {}
-        self.turn_counter = 0
-        self.collector = CodexRolloutCollector(
-            cwd=cwd,
-            env=env,
-            session_id=self.requested_session,
-            counters=self.counters,
-            on_change=self._usage_updated,
-        )
+def _has_reasoning_conflict(args: tuple[str, ...]) -> bool:
+    """Return ``True`` when ``args`` sets ``model_reasoning_effort=...`` via ``-c`` or ``--config``."""
+    for index, token in enumerate(args):
+        if token in ("-c", "--config"):
+            if index + 1 < len(args) and _is_reasoning_override(args[index + 1]):
+                return True
+        elif token.startswith(("-c=", "--config=")):
+            _, _, rhs = token.partition("=")
+            if _is_reasoning_override(rhs):
+                return True
+        elif token.startswith("-c") and _is_reasoning_override(token[2:]):
+            return True
+    return False
 
-    async def feed(self, line: str) -> None:
-        stripped = line.strip()
-        if not self.stdout_session_id:
-            self.stdout_session_id = _session_id_line(stripped)
-        event = parse_json_object(stripped)
-        if event is None:
-            if stripped:
-                self._keep_diagnostic(stripped)
+
+def _raise_if_diagnostic(error: Diagnostic | None) -> None:
+    if error is not None:
+        raise RequestError(error.code, error.message)
+
+
+def _entity_id(item: Mapping[str, Any]) -> str | None:
+    raw = item.get("id")
+    return raw if isinstance(raw, str) and raw else None
+
+
+def _classify_error_message(message: str) -> Diagnostic:
+    code = keyword_code(message)
+    if code is None:
+        lowered = message.lower()
+        # codex/0.169.0/invalid_model.stdout.jsonl:6-7: "The '...' model is not supported..."
+        if "model" in lowered and "not supported" in lowered:
+            code = ErrorCode.INVALID_MODEL
         else:
-            self._on_event(event)
-        await self.events.flush()
+            code = ErrorCode.EXECUTION_ERROR
+    return Diagnostic(code=code, message=message)
 
-    def _keep_diagnostic(self, line: str) -> None:
-        code = keyword_code(line)
-        self.diagnostics.add(line, marks=(code,) if code else ())
 
-    def _usage_updated(self) -> None:
-        self.events.emit(UsageUpdated(usage=self.counters.usage()))
+def _error_precedence(error: Diagnostic) -> int:
+    return {
+        ErrorCode.AUTH: 5,
+        ErrorCode.INVALID_MODEL: 4,
+        ErrorCode.CONTEXT_OVERFLOW: 4,
+        ErrorCode.SERVICE_ERROR: 3,
+    }.get(error.code, 1)
 
-    def _start_item(self, item: dict[str, Any], raw_id: str) -> None:
-        item_type = item.get("type", "")
-        if item_type == "agent_message":
-            self.entity_counter += 1
-            entity_id = f"msg-{self.entity_counter}"
-            if raw_id:
-                self.raw_to_entity[raw_id] = entity_id
-            self.events.emit(MessageStarted(entity_id=entity_id))
-        elif item_type == "tool_call":
-            self.entity_counter += 1
-            entity_id = f"tool-{self.entity_counter}"
-            if raw_id:
-                self.raw_to_entity[raw_id] = entity_id
-            self.events.emit(tool_started(entity_id, "codex", str(item.get("name", "")), tool_input=item.get("input")))
 
-    def _complete_item(self, item: dict[str, Any], raw_id: str) -> None:
-        item_type = item.get("type", "")
-        if item_type == "agent_message":
-            text = item.get("text")
-            if isinstance(text, str) and text:
-                self.agent_messages.append(text)
-            entity_id = self.raw_to_entity.get(raw_id) or f"msg-{self.entity_counter or 1}"
-            if isinstance(text, str) and text:
-                self.events.emit(TextDelta(text=text, entity_id=entity_id))
-            self.events.emit(MessageCompleted(entity_id=entity_id))
-        elif item_type == "tool_call":
-            entity_id = self.raw_to_entity.get(raw_id) or f"tool-{self.entity_counter or 1}"
-            self.events.emit(ToolCompleted(status=tool_status(item.get("status")), entity_id=entity_id))
+def _tool_status(item: Mapping[str, Any], *, exit_code: int | None = None) -> Literal["completed", "error", "unknown"]:
+    if exit_code is not None:
+        return "completed" if exit_code == 0 else "error"
+    if item.get("type") == "command_execution":
+        return "unknown"
+    status = item.get("status")
+    if status == "completed":
+        return "completed"
+    if status == "failed":
+        return "error"
+    return "unknown"
 
-    def _on_event(self, parsed: dict[str, Any]) -> None:
-        event_type = parsed.get("type", "")
-        if event_type == "thread.started" and parsed.get("thread_id"):
-            thread_id = str(parsed.get("thread_id"))
-            if thread_id != self.thread_session_id:
-                self.thread_session_id = thread_id
-                self.events.emit(SessionIdentified(session_id=thread_id))
-            self.collector.set_session_id(thread_id)
-        self.collector.poll()
 
-        item = parsed.get("item")
-        if isinstance(item, dict):
-            raw_id = str(item.get("id", ""))
-            if event_type == "item.started":
-                self._start_item(item, raw_id)
-            elif event_type == "item.completed":
-                self._complete_item(item, raw_id)
+def _file_changes(item: Mapping[str, Any], entity_id: str | None) -> list[Event]:
+    changes = item.get("changes")
+    if not isinstance(changes, list):
+        return []
+    events: list[Event] = []
+    for entry in changes:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        kind = entry.get("kind")
+        # https://github.com/openai/codex/blob/main/sdk/typescript/src/items.ts defines add/delete/update.
+        change: Literal["added", "modified", "deleted", "unknown"] = (
+            _FILE_CHANGE_MAP[kind] if isinstance(kind, str) and kind in _FILE_CHANGE_MAP else "unknown"
+        )
+        events.append(FileChanged(path=path, change=change, evidence="reported", entity_id=entity_id))
+    return events
+
+
+class _CodexParser:
+    """Line-by-line parser for ``codex exec --json`` JSONL output."""
+
+    def __init__(self) -> None:
+        self._session_id: str | None = None
+        self._usage = Usage()
+        self._error: Diagnostic | None = None
+        self._error_lines: list[str] = []
+        self._started_tools: set[str] = set()
+        self._unkeyed_started_tools: dict[str, int] = {}
+
+    def feed_json(self, obj: dict[str, Any]) -> Iterable[Event]:
+        event_type = obj.get("type")
+        if event_type == "thread.started":
+            thread_id = obj.get("thread_id")
+            if isinstance(thread_id, str) and thread_id:
+                self._session_id = thread_id
+                return (SessionIdentified(session_id=thread_id, entity_id=None),)
+            return ()
 
         if event_type == "turn.completed":
-            self.collector.poll()
-            self._record_turn_usage(parsed.get("usage"))
-            self.collector.poll()
-        elif event_type in ("thread.completed", "summary"):
-            self.collector.poll()
-            self._record_final_usage(parsed.get("usage"))
-            self.collector.poll()
+            self._error = None
+            return self._handle_usage(obj.get("usage"))
 
-    def _record_turn_usage(self, u: Any) -> None:
-        if not isinstance(u, dict):
-            return
-        raw_in = as_int(u.get("input_tokens"))
-        cached_in = as_int(u.get("cached_input_tokens"))
-        cw = as_int(u.get("cache_write_input_tokens"))
-        raw_out = as_int(u.get("output_tokens"))
-        reasoning_out = as_int(u.get("reasoning_output_tokens"))
-        if not any(v is not None for v in (raw_in, cached_in, cw, raw_out, reasoning_out)):
-            return
-        # Codex input_tokens already includes cached_input_tokens.
-        self.turn_counter += 1
-        self.counters.record_response(
-            f"turn_{self.turn_counter}",
-            input=raw_in,
-            output=raw_out,
-            cache_read=cached_in,
-            cache_write=cw,
+        if event_type == "error":
+            message = obj.get("message")
+            if isinstance(message, str) and message:
+                self._record_error(_classify_error_message(message))
+            return ()
+
+        if event_type == "turn.failed":
+            err = obj.get("error")
+            if isinstance(err, dict):
+                message = err.get("message")
+                if isinstance(message, str) and message:
+                    self._record_error(_classify_error_message(message))
+            return ()
+
+        if event_type == "item.started":
+            item = obj.get("item")
+            return self._handle_item_started(item) if isinstance(item, dict) else ()
+
+        if event_type == "item.completed":
+            item = obj.get("item")
+            return self._handle_item_completed(item) if isinstance(item, dict) else ()
+
+        return ()
+
+    def _record_error(self, error: Diagnostic) -> None:
+        if self._error is None or _error_precedence(error) > _error_precedence(self._error):
+            self._error = error
+
+    def feed_text(self, line: str, *, stream: Literal["stdout", "stderr"]) -> Iterable[Event]:
+        if stream == "stdout" and line.strip():
+            self._error_lines.append(line.strip())
+        return ()
+
+    def finish(self, read_back: Mapping[Path, bytes]) -> Facts:
+        return Facts(
+            session_id=self._session_id,
+            model=None,
+            usage=self._usage,
+            num_turns=None,
+            error=self._error,
+            error_text="\n".join(self._error_lines),
         )
-        self._record_turn_context(raw_in, raw_out, reasoning_out)
-        self._usage_updated()
 
-    def _record_turn_context(self, norm_in: int | None, norm_out: int | None, reasoning_out: int | None) -> None:
-        """Derive a context snapshot from turn usage unless the rollout already owns the context."""
-        if norm_in is None or norm_out is None:
-            return
-        used = norm_in + norm_out - (reasoning_out or 0)
-        if (
-            used >= 0
-            and not self.collector.is_compacted
-            and not self.collector.has_verified_context
-            and not self.collector.budget_exhausted
-        ):
-            self.counters.record_context(used=used)
+    def _handle_usage(self, raw: Any) -> Iterable[Event]:
+        if not isinstance(raw, dict):
+            return ()
+        input_tokens = as_int(raw.get("input_tokens"))
+        output_tokens = as_int(raw.get("output_tokens"))
+        cache_read = as_int(raw.get("cached_input_tokens"))
+        cache_write = as_int(raw.get("cache_write_input_tokens"))
+        if all(value is None for value in (input_tokens, output_tokens, cache_read, cache_write)):
+            return ()
+        self._usage = Usage(
+            input=input_tokens,
+            output=output_tokens,
+            cache_read=cache_read,
+            cache_write=cache_write,
+        )
+        return (UsageUpdated(usage=self._usage),)
 
-    def _record_final_usage(self, u: Any) -> None:
-        if not isinstance(u, dict):
-            return
-        raw_in = as_int(u.get("input_tokens"))
-        cached_in = as_int(u.get("cached_input_tokens"))
-        cw = as_int(u.get("cache_write_input_tokens"))
-        raw_out = as_int(u.get("output_tokens"))
-        if any(v is not None for v in (raw_in, cached_in, cw, raw_out)) and not self.requested_session:
-            self.counters.record_totals(input=raw_in, output=raw_out, cache_read=cached_in, cache_write=cw)
-            self._usage_updated()
+    def _handle_item_started(self, item: dict[str, Any]) -> Iterable[Event]:
+        item_type = item.get("type")
+        entity_id = _entity_id(item)
+        if item_type == "command_execution":
+            self._track_tool_start(item_type, entity_id)
+            command = item.get("command")
+            return (
+                ToolStarted(
+                    tool="command_execution",
+                    activity="command",
+                    input={"command": command} if isinstance(command, str) else None,
+                    entity_id=entity_id,
+                ),
+            )
+        if item_type == "file_change":
+            self._track_tool_start(item_type, entity_id)
+            changes = item.get("changes")
+            return (
+                ToolStarted(
+                    tool="file_change",
+                    activity="tool_call",
+                    input={"changes": changes} if isinstance(changes, list) else None,
+                    entity_id=entity_id,
+                ),
+            )
+        if item_type in ("mcp_tool_call", "web_search"):
+            tool = self._tool_name(item, item_type)
+            if tool is None:
+                return ()
+            self._track_tool_start(item_type, entity_id)
+            return (ToolStarted(tool=str(tool), activity="tool_call", input=None, entity_id=entity_id),)
+        return ()
 
-    def finish(self, process: ProcessOutcome, cancel: asyncio.Event, last_message: str) -> Result:
-        """Map the parsed stream, the last-message file text, and the transport outcome to a result."""
-        last_message_text = last_message.strip()
-        text = last_message_text or "".join(self.agent_messages).strip()
+    def _track_tool_start(self, item_type: str, entity_id: str | None) -> None:
+        if entity_id is not None:
+            self._started_tools.add(entity_id)
+        else:
+            self._unkeyed_started_tools[item_type] = self._unkeyed_started_tools.get(item_type, 0) + 1
 
-        session_id = _resolve_session_id(self.thread_session_id, last_message, self.stdout_session_id)
-        if session_id:
-            self.collector.set_session_id(session_id)
-            self.collector.poll()
+    def _take_start(self, item_type: str, entity_id: str | None) -> bool:
+        if entity_id is not None:
+            if entity_id in self._started_tools:
+                self._started_tools.remove(entity_id)
+                return True
+            return False
+        count = self._unkeyed_started_tools.get(item_type, 0)
+        if not count:
+            return False
+        if count == 1:
+            del self._unkeyed_started_tools[item_type]
+        else:
+            self._unkeyed_started_tools[item_type] = count - 1
+        return True
 
-        facts: Facts = process_facts(process, cancel)
-        facts.text = text
-        facts.session_id = session_id or None
-        # Diagnostics classify the run only when there is no agent output, or when the process exited nonzero.
-        if not text or facts.returncode:
-            facts.diagnostics = self.diagnostics.text()
-        return build_result(facts, model=self.collector.model_name, usage=self.counters.usage())
+    def _take_or_synthesize_start(self, item: dict[str, Any], item_type: str, entity_id: str | None) -> list[Event]:
+        if self._take_start(item_type, entity_id):
+            return []
+        events = list(self._handle_item_started(item))
+        self._take_start(item_type, entity_id)
+        return events
+
+    @staticmethod
+    def _tool_name(item: Mapping[str, Any], item_type: str) -> str | None:
+        if item_type == "mcp_tool_call":
+            # https://github.com/openai/codex/blob/main/codex-rs/exec/src/exec_events.rs defines McpToolCallItem.tool.
+            tool = item.get("tool")
+            return tool if isinstance(tool, str) and tool else None
+        return item_type
+
+    def _handle_item_completed(self, item: dict[str, Any]) -> Iterable[Event]:
+        item_type = item.get("type")
+        entity_id = _entity_id(item)
+
+        if item_type == "agent_message":
+            text = item.get("text")
+            if not isinstance(text, str):
+                return ()
+            events: list[Event] = [MessageStarted(entity_id=entity_id)]
+            events.append(TextDelta(text=text, entity_id=entity_id))
+            events.append(MessageCompleted(entity_id=entity_id))
+            return events
+
+        if item_type == "reasoning":
+            text = item.get("text")
+            return (ReasoningDelta(text=text, entity_id=entity_id),) if isinstance(text, str) and text else ()
+
+        if item_type == "error":
+            message = item.get("message")
+            return (Notice(code="error", message=message, entity_id=entity_id),) if isinstance(message, str) else ()
+
+        if item_type == "command_execution":
+            events = self._take_or_synthesize_start(item, item_type, entity_id)
+            exit_code = as_int(item.get("exit_code"))
+            output = item.get("aggregated_output")
+            events.append(
+                ToolCompleted(
+                    tool="command_execution",
+                    status=_tool_status(item, exit_code=exit_code),
+                    output=output if isinstance(output, str) else None,
+                    entity_id=entity_id,
+                )
+            )
+            return events
+
+        if item_type == "file_change":
+            events = self._take_or_synthesize_start(item, item_type, entity_id)
+            events.append(
+                ToolCompleted(
+                    tool="file_change",
+                    status=_tool_status(item),
+                    output=None,
+                    entity_id=entity_id,
+                )
+            )
+            events.extend(_file_changes(item, entity_id))
+            return events
+
+        if item_type in ("mcp_tool_call", "web_search"):
+            tool = self._tool_name(item, item_type)
+            if tool is None:
+                return ()
+            events = self._take_or_synthesize_start(item, item_type, entity_id)
+            output = item.get("result")
+            events.append(
+                ToolCompleted(
+                    tool=str(tool),
+                    status=_tool_status(item),
+                    output=output,
+                    entity_id=entity_id,
+                )
+            )
+            return events
+
+        return ()
 
 
 class CodexDriver(CliDriver):
@@ -257,77 +369,44 @@ class CodexDriver(CliDriver):
     The driver never adds an approval or sandbox flag.
     """
 
-    name = "codex"
-    executable = "codex"
-    owned_flags = ("--json", "-o", "--output-last-message")
-    portable_flags = {
-        "model": ("--model", "-m"),
-        "reasoning": ("-c", "--config"),
-    }
-    help_args = ("exec", "--help")
-    help_markers = ("--json", "--output-last-message")
+    name: ClassVar[str] = "codex"
+    executable: ClassVar[str] = "codex"
 
-    def validate(self, req: Request) -> Diagnostic | None:
-        token = _cd_flag(req.args)
-        if token is not None:
-            return Diagnostic(
-                code="invalid_args", message=f"args cannot set the working directory ({token!r}); use Request.cwd"
+    def launch(self, req: Request, exe: Path, tmp: Path) -> Launch:
+        _raise_if_diagnostic(reject_unsupported(req, _SUPPORTED_OPTIONS))
+        _raise_if_diagnostic(reject_transport_flags(req.args, _OWNED_FLAGS))
+        _raise_if_diagnostic(reject_conflicts(req, {"model": ("--model", "-m")}))
+        if req.model is not None and any(arg.startswith("-m") and len(arg) > 2 for arg in req.args):
+            raise RequestError(ErrorCode.INVALID_ARGS, "args flag '-m' conflicts with the model option")
+        cd_token = _cd_flag(req.args)
+        if cd_token is not None:
+            raise RequestError(
+                ErrorCode.INVALID_ARGS,
+                f"args cannot set the working directory ({cd_token!r}); use Request.cwd",
             )
-        return None
+        if req.reasoning is not None and _has_reasoning_conflict(req.args):
+            raise RequestError(
+                ErrorCode.INVALID_ARGS,
+                "args config 'model_reasoning_effort' conflicts with the reasoning option",
+            )
 
-    def portable_argv(self, req: Request) -> list[str]:
-        argv: list[str] = []
+        argv: list[str] = [os.fspath(exe), "exec"]
+        if req.session_id:
+            # codex exec resume accepts --json, options, <session_id>, - (FINDINGS.md #2).
+            argv.append("resume")
+        argv.append("--json")
         if req.model is not None:
             argv.extend(["--model", req.model])
         if req.reasoning is not None:
             argv.extend(["-c", f"model_reasoning_effort={_toml_string(req.reasoning)}"])
-        return argv
-
-    def _argv(self, executable: Path, req: Request, last_message_path: Path) -> list[str]:
-        argv = [os.fspath(executable), "exec", "--json", "-o", os.fspath(last_message_path)]
-        argv.extend(self.portable_argv(req))
         argv.extend(req.args)
         if req.session_id:
-            argv.extend(["resume", req.session_id])
-        # "-" makes codex exec read the prompt from stdin.
+            argv.append(req.session_id)
         argv.append("-")
-        return argv
+        return Launch(argv=tuple(argv), stdin=req.prompt.encode("utf-8"))
 
-    async def run(
-        self,
-        req: Request,
-        *,
-        on_event: EventHandler,
-        cancel: asyncio.Event,
-        on_spawn: SpawnHandler | None,
-    ) -> Result:
-        prepared = self.preflight(req, cancel)
-        if isinstance(prepared, Result):
-            return prepared
-        cwd, executable = prepared
-        fd, name = tempfile.mkstemp(prefix="coding-agent-cli-", suffix=".txt")
-        os.close(fd)
-        last_message_path = Path(name)
-        self.log.info("run start resume=%s prompt_len=%d", bool(req.session_id), len(req.prompt))
-        run = CodexRun(on_event, cwd=cwd, env=effective_env(req), requested_session=req.session_id)
-        try:
-            process = await run_process(
-                self._argv(executable, req, last_message_path),
-                req.prompt,
-                dict(req.env),
-                os.fspath(cwd),
-                deadline_for(req),
-                cancel,
-                run.feed,
-                on_spawn=on_spawn,
-            )
-            last_message = read_and_unlink(last_message_path, errors="replace")
-        finally:
-            with contextlib.suppress(OSError):
-                last_message_path.unlink()
-        result = run.finish(process, cancel, last_message)
-        self.log.info("run done outcome=%s", result.outcome)
-        return result
+    def parser(self, req: Request) -> Parser:
+        return _CodexParser()
 
 
-__all__ = ["MAX_DIAGNOSTICS", "CodexDriver", "CodexRun"]
+__all__ = ["CodexDriver"]

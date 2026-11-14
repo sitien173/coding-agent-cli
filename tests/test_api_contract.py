@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import sys
 import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from coding_agent_cli import DriverRegistry, Outcome, Request, RunCompleted, TextDelta, run, run_sync
+import coding_agent_cli.driver as driver_module
+from coding_agent_cli import DriverRegistry, Outcome, Request, RunCompleted, TextDelta, check, run, run_sync
+from coding_agent_cli._transport import TransportOutcome
 from coding_agent_cli.events import Event
 
-from .test_process import wait_gone
+from .test_stream import wait_gone
 from .toy_driver import ToyDriver
 
 
@@ -82,7 +86,8 @@ async def test_stalled_on_event_does_not_block_deadline() -> None:
             await asyncio.sleep(30)
 
     start = time.monotonic()
-    result = await run(_req("sleeper.py", timeout_s=0.5), on_event=on_event, registry=registry)
+    async with asyncio.timeout(4):
+        result = await run(_req("sleeper.py", timeout_s=0.5), on_event=on_event, registry=registry)
     assert time.monotonic() - start < 10
     assert result.error is not None and result.error.code == "timeout"
 
@@ -105,10 +110,59 @@ def test_run_sync_outside_loop() -> None:
     assert run_sync(_req("many_lines.py", "1"), registry=registry).outcome == Outcome.SUCCESS
 
 
+def test_run_sync_preset_cancel_is_latched_before_spawn(tmp_path: Path) -> None:
+    registry, _ = _registry()
+    cancel = threading.Event()
+    cancel.set()
+    req = dataclasses.replace(_req("many_lines.py", "1"), executable=str(tmp_path / "missing-cli"))
+    assert run_sync(req, cancel=cancel, registry=registry).outcome == Outcome.CANCELLED
+
+
 async def test_run_sync_inside_loop_raises() -> None:
     registry, _ = _registry()
     with pytest.raises(RuntimeError):
         run_sync(_req("many_lines.py", "1"), registry=registry)
+
+
+async def test_check_caches_only_successful_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry, _ = _registry()
+    calls: list[list[str]] = []
+    return_code = 0
+
+    async def probe(args, on_line, **kwargs):
+        calls.append(args)
+        await on_line("stdout", "toy 1.0")
+        return TransportOutcome(stop_cause="exited", returncode=return_code)
+
+    monkeypatch.setattr(driver_module, "run_transport", probe)
+    driver_module._check_cache.clear()
+    async with asyncio.timeout(1.5):
+        first = await check("toy", executable=sys.executable, registry=registry)
+    async with asyncio.timeout(1.5):
+        cached = await check("toy", executable=sys.executable, registry=registry)
+    assert first == cached and first.version == "toy 1.0"
+    assert len(calls) == 2
+    return_code = 1
+    async with asyncio.timeout(1.5):
+        failed = await check("toy", executable=sys.executable, registry=registry, refresh=True)
+    async with asyncio.timeout(1.5):
+        await check("toy", executable=sys.executable, registry=registry, refresh=True)
+    assert not failed.available
+    assert len(calls) == 4
+
+
+def test_run_sync_accepts_sync_callback_and_threading_event() -> None:
+    registry, _ = _registry()
+    cancel = threading.Event()
+    timer = threading.Timer(0.15, cancel.set)
+    seen: list[object] = []
+    timer.start()
+    try:
+        result = run_sync(_req("sleeper.py", timeout_s=1.5), on_event=seen.append, cancel=cancel, registry=registry)
+    finally:
+        timer.cancel()
+    assert result.outcome == Outcome.CANCELLED
+    assert seen and isinstance(seen[-1], RunCompleted)
 
 
 async def test_cross_thread_cancel() -> None:

@@ -1,0 +1,26 @@
+{
+  "cli": "pi",
+  "version": "1.5.2",
+  "version_output": "1.5.2",
+  "scenario": "no_p",
+  "argv": [
+    "pi",
+    "--mode",
+    "json",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-themes",
+    "--no-context-files",
+    "--no-mcp",
+    "--model",
+    "openai-codex/gpt-5.6-luna",
+    "--session-dir",
+    "<REDACTED_PATH>/pi-sessions"
+  ],
+  "returncode": 0,
+  "timed_out": false,
+  "cancelled": false,
+  "outcome": "success",
+  "code": null
+}

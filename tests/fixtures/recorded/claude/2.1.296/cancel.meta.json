@@ -1,0 +1,27 @@
+{
+  "cli": "claude",
+  "version": "2.1.296",
+  "version_output": "2.1.296 (Claude Code)",
+  "scenario": "cancel",
+  "argv": [
+    "claude",
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--setting-sources",
+    "",
+    "--strict-mcp-config",
+    "--disable-slash-commands",
+    "--model",
+    "haiku",
+    "--max-budget-usd",
+    "0.05"
+  ],
+  "returncode": 143,
+  "timed_out": false,
+  "cancelled": true,
+  "outcome": "cancelled",
+  "code": "cancelled"
+}

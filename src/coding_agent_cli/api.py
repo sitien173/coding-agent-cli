@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
-import logging
-from collections.abc import Awaitable, Callable
+import inspect
+import threading
+from collections.abc import Awaitable, Callable, Mapping
 from types import TracebackType
 
-from .events import Event, RunCompleted
-from .registry import DriverRegistry, SpawnHandler
+from .events import Event
+from .registry import DriverRegistry
 from .types import Capabilities, Request, Result
 
-log = logging.getLogger("coding_agent_cli")
-
 STREAM_QUEUE_SIZE = 256
-
 _default_registry: DriverRegistry | None = None
 
 
@@ -31,60 +28,29 @@ def _registry(registry: DriverRegistry | None) -> DriverRegistry:
 async def run(
     req: Request,
     *,
-    on_event: Callable[[Event], Awaitable[None]] | None = None,
+    on_event: Callable[[Event], Awaitable[None] | None] | None = None,
     cancel: asyncio.Event | None = None,
-    on_spawn: SpawnHandler | None = None,
+    on_spawn: Callable[[int], Awaitable[None] | None] | None = None,
     registry: DriverRegistry | None = None,
 ) -> Result:
-    """Run ``req`` to completion and return its ``Result``.
-
-    ``on_event`` receives each event with a strictly increasing ``sequence``, ending with
-    exactly one ``RunCompleted`` after the process tree is gone. An exception from
-    ``on_event`` or ``on_spawn`` is raised after cleanup. Setting ``cancel`` ends the run
-    with a ``cancelled`` result; from another thread use ``loop.call_soon_threadsafe(cancel.set)``.
-    Raises ``KeyError`` for an unknown driver.
-    """
     driver = _registry(registry).get(req.driver)
-    sequence = 0
-    failures: list[BaseException] = []
 
     async def emit(event: Event) -> None:
-        nonlocal sequence
-        if isinstance(event, RunCompleted):
-            return
-        sequence += 1
-        if on_event is None:
-            return
-        try:
-            await on_event(dataclasses.replace(event, sequence=sequence))
-        except Exception as exc:
-            failures.append(exc)
-            raise
+        if on_event is not None:
+            result = on_event(event)
+            if inspect.isawaitable(result):
+                await result
 
-    log.debug("run start driver=%s", req.driver)
-    result = await driver.run(req, on_event=emit, cancel=cancel or asyncio.Event(), on_spawn=on_spawn)
-    if failures:
-        raise failures[0]
-    log.debug("run done driver=%s outcome=%s", req.driver, result.outcome)
-    if on_event is not None:
-        await on_event(RunCompleted(result=result, sequence=sequence + 1))
-    return result
+    return await driver.run(req, on_event=emit, cancel=cancel or asyncio.Event(), on_spawn=on_spawn)
 
 
 class EventStream:
-    """Async iterator over one run's events, ending after ``RunCompleted``.
-
-    Use it as ``async with stream(req) as events: async for event in events: ...``.
-    Leaving the block or calling ``aclose()`` cancels the run and kills the process tree.
-    A bare ``async for`` without ``async with`` is safe only when it runs to the end.
-    """
-
     def __init__(
         self,
         req: Request,
         *,
         cancel: asyncio.Event | None,
-        on_spawn: SpawnHandler | None,
+        on_spawn: Callable[[int], Awaitable[None] | None] | None,
         registry: DriverRegistry | None,
     ) -> None:
         self._req = req
@@ -97,7 +63,7 @@ class EventStream:
 
     def _start(self) -> asyncio.Task[Result]:
         if self._task is None:
-            self._task = asyncio.ensure_future(
+            self._task = asyncio.create_task(
                 run(
                     self._req,
                     on_event=self._queue.put,
@@ -123,7 +89,7 @@ class EventStream:
                 if not task.cancelled() and task.exception() is not None:
                     raise task.exception()  # type: ignore[misc]
                 raise StopAsyncIteration
-            getter = asyncio.ensure_future(self._queue.get())
+            getter = asyncio.create_task(self._queue.get())
             try:
                 await asyncio.wait({getter, task}, return_when=asyncio.FIRST_COMPLETED)
             finally:
@@ -133,31 +99,27 @@ class EventStream:
                 return getter.result()
 
     async def aclose(self) -> None:
-        """Cancel the run if it is still going and wait for its cleanup."""
         self._finished = True
         task = self._task
-        if task is None:
-            return
-        if not task.done():
+        if task is not None and not task.done():
             task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            current = asyncio.current_task()
-            if current is not None and current.cancelling():
-                raise
-        except Exception:
-            pass
+        if task is not None:
+            try:
+                async with asyncio.timeout(12):
+                    await task
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+            except Exception:
+                pass
 
     async def __aenter__(self) -> EventStream:
         self._start()
         return self
 
     async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
     ) -> None:
         await self.aclose()
 
@@ -166,25 +128,63 @@ def stream(
     req: Request,
     *,
     cancel: asyncio.Event | None = None,
-    on_spawn: SpawnHandler | None = None,
+    on_spawn: Callable[[int], Awaitable[None] | None] | None = None,
     registry: DriverRegistry | None = None,
 ) -> EventStream:
-    """Return an ``EventStream`` for ``req``. The run starts on ``async with`` or the first ``__anext__``."""
     return EventStream(req, cancel=cancel, on_spawn=on_spawn, registry=registry)
 
 
-def run_sync(req: Request, *, registry: DriverRegistry | None = None) -> Result:
-    """Run ``req`` with ``asyncio.run``. Raises ``RuntimeError`` inside a running event loop."""
+def run_sync(
+    req: Request,
+    *,
+    on_event: Callable[[Event], None] | None = None,
+    cancel: threading.Event | None = None,
+    registry: DriverRegistry | None = None,
+) -> Result:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(run(req, registry=registry))
+
+        async def execute() -> Result:
+            async_cancel = asyncio.Event()
+            if cancel is not None and cancel.is_set():
+                async_cancel.set()
+
+            async def watch_cancel() -> None:
+                if cancel is None:
+                    return
+                while not cancel.is_set():
+                    try:
+                        async with asyncio.timeout(0.1):
+                            await async_cancel.wait()
+                    except TimeoutError:
+                        continue
+                async_cancel.set()
+
+            watcher = asyncio.create_task(watch_cancel())
+            try:
+                return await run(req, on_event=on_event, cancel=async_cancel, registry=registry)
+            finally:
+                watcher.cancel()
+                try:
+                    async with asyncio.timeout(0.2):
+                        await watcher
+                except asyncio.CancelledError:
+                    pass
+
+        return asyncio.run(execute())
     raise RuntimeError("run_sync() cannot be called from a running event loop; await run() instead")
 
 
-async def check(req: Request, *, registry: DriverRegistry | None = None, refresh: bool = False) -> Capabilities:
-    """Report whether the driver's CLI is available and supports structured streaming."""
-    return await _registry(registry).get(req.driver).check(req, refresh=refresh)
+async def check(
+    driver: str,
+    *,
+    executable: str | None = None,
+    env: Mapping[str, str] | None = None,
+    refresh: bool = False,
+    registry: DriverRegistry | None = None,
+) -> Capabilities:
+    return await _registry(registry).get(driver).check(executable=executable, env=env, refresh=refresh)
 
 
 __all__ = ["EventStream", "check", "run", "run_sync", "stream"]

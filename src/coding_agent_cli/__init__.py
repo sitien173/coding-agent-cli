@@ -1,11 +1,17 @@
 """Run coding-agent CLIs, stream typed events, and return a classified result."""
 
 from .api import EventStream, check, run, run_sync, stream
+from .driver import CliDriver, Facts, Launch, Parser, RequestError
 from .events import (
     SCHEMA_VERSION,
     Event,
+    FileChanged,
+    JsonValue,
     MessageCompleted,
     MessageStarted,
+    Notice,
+    RawEvent,
+    ReasoningDelta,
     RunCompleted,
     SessionIdentified,
     TextDelta,
@@ -13,8 +19,8 @@ from .events import (
     ToolStarted,
     UsageUpdated,
 )
-from .registry import Driver, DriverRegistry, EventHandler, SpawnHandler
-from .types import Capabilities, Diagnostic, Outcome, Request, Result, Usage
+from .registry import DriverRegistry
+from .types import Capabilities, Diagnostic, ErrorCode, Outcome, Request, Result, Usage
 
 __version__ = "0.1.0"
 
@@ -22,19 +28,27 @@ __all__ = [
     "SCHEMA_VERSION",
     "Capabilities",
     "Diagnostic",
-    "Driver",
-    "EventStream",
+    "CliDriver",
     "DriverRegistry",
+    "ErrorCode",
     "Event",
-    "EventHandler",
+    "EventStream",
+    "FileChanged",
+    "Facts",
+    "JsonValue",
     "MessageCompleted",
     "MessageStarted",
+    "Launch",
+    "Notice",
     "Outcome",
+    "RawEvent",
+    "ReasoningDelta",
     "Request",
     "Result",
     "RunCompleted",
     "SessionIdentified",
-    "SpawnHandler",
+    "Parser",
+    "RequestError",
     "TextDelta",
     "ToolCompleted",
     "ToolStarted",

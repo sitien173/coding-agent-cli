@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -37,8 +38,11 @@ def _python(venv: Path) -> Path:
 
 
 def test_build_makes_one_wheel_and_one_sdist(dist: Path) -> None:
-    assert len(list(dist.glob("*.whl"))) == 1
+    wheels = list(dist.glob("*.whl"))
+    assert len(wheels) == 1
     assert len(list(dist.glob("*.tar.gz"))) == 1
+    with zipfile.ZipFile(wheels[0]) as wheel:
+        assert not any(name == "scripts" or name.startswith("scripts/") for name in wheel.namelist())
 
 
 @pytest.mark.parametrize("pattern", ["*.whl", "*.tar.gz"])

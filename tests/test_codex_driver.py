@@ -1,692 +1,599 @@
-"""Codex driver tests: recorded stream parsing, session sources, argv policy, and transport.
-
-The parsing section feeds recorded JSONL lines through ``CodexRun``. The transport section runs the
-real driver against the fake ``codex`` launcher. Rollout enrichment is covered in ``test_codex_rollout.py``.
-"""
+"""Tests for CodexDriver launch policy, parser, and recorded fixture replay."""
 
 from __future__ import annotations
 
-import asyncio
-import json
-import tempfile
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-from coding_agent_cli import (
-    Diagnostic,
-    DriverRegistry,
-    Outcome,
-    Result,
-    SessionIdentified,
-    TextDelta,
-    ToolCompleted,
-    ToolStarted,
-    Usage,
-    UsageUpdated,
-)
-from coding_agent_cli._drivers._common import classify_tool_activity
-from coding_agent_cli._drivers.codex import MAX_DIAGNOSTICS, CodexDriver, CodexRun, _toml_string
-from coding_agent_cli._process import ProcessOutcome
-from coding_agent_cli.events import Event
+from coding_agent_cli._drivers.codex import CodexDriver
+from coding_agent_cli.driver import RequestError
+from coding_agent_cli.types import ErrorCode, Request
 
-from .cli_stub import run_driver, stub_cli
-
-USAGE_FIXTURE = Path(__file__).parent / "fixtures" / "usage" / "codex.jsonl"
-FIXTURE_THREAD_ID = "00000000-0000-0000-0000-000000000000"
-SESSION = "11111111-2222-3333-4444-555555555555"
-OTHER = "66666666-7777-8888-9999-aaaaaaaaaaaa"
-THIRD = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-FORBIDDEN_FLAGS = (
-    "--yolo",
-    "--full-auto",
+_FORBIDDEN_PERMISSION_FLAGS = (
     "--dangerously-bypass-approvals-and-sandbox",
-    "--sandbox",
+    "--full-auto",
     "-s",
-    "--ask-for-approval",
+    "--sandbox",
     "-a",
-    "--approve-for-me",
+    "--ask-for-approval",
 )
-TRANSPORT_PREFIX = ["codex", "exec", "--json", "-o"]
 
 
-@pytest.fixture(autouse=True)
-def _isolated_codex_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point CODEX_HOME at an empty tree so no run reads the real ~/.codex."""
-    home = tmp_path / "codex-home"
-    (home / "sessions").mkdir(parents=True)
-    monkeypatch.setenv("CODEX_HOME", str(home))
-    return home
+def _req(tmp_path: Path, **overrides: object) -> Request:
+    defaults: dict[str, object] = {
+        "driver": "codex",
+        "prompt": "hello",
+        "cwd": tmp_path,
+    }
+    defaults.update(overrides)
+    return Request(**defaults)  # type: ignore[arg-type]
 
 
-@pytest.fixture
-def temp_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Route ``tempfile`` to a per-test directory so temporary-file cleanup is observable."""
-    directory = tmp_path / "tmp"
-    directory.mkdir()
-    monkeypatch.setattr(tempfile, "tempdir", str(directory))
-    return directory
+def test_launch_plain_argv_and_stdin(tmp_path: Path) -> None:
+    driver = CodexDriver()
+    launch = driver.launch(_req(tmp_path), Path("/usr/bin/codex"), tmp_path)
+    assert launch.argv == ("/usr/bin/codex", "exec", "--json", "-")
+    assert launch.stdin == b"hello"
+    assert launch.read_back == ()
 
 
-def _event(**fields: object) -> str:
-    return json.dumps(fields)
-
-
-def _thread(thread_id: str) -> str:
-    return _event(type="thread.started", thread_id=thread_id)
-
-
-def _message(text: str, item_id: str = "item_1") -> str:
-    return _event(type="item.completed", item={"id": item_id, "type": "agent_message", "text": text})
-
-
-def _turn(input_tokens: int = 1000, output_tokens: int = 50, **extra: int) -> str:
-    return _event(type="turn.completed", usage={"input_tokens": input_tokens, "output_tokens": output_tokens, **extra})
-
-
-def _feed(*lines: str, cwd: Path, requested_session: str | None = None) -> tuple[CodexRun, list[Event]]:
-    """Feed lines through the parser without a process."""
-    events: list[Event] = []
-
-    async def sink(event: Event) -> None:
-        events.append(event)
-
-    async def go() -> CodexRun:
-        run = CodexRun(sink, cwd=cwd, env={}, requested_session=requested_session)
-        for line in lines:
-            await run.feed(line)
-        return run
-
-    return asyncio.run(go()), events
-
-
-def _parse(
-    *lines: str,
-    cwd: Path,
-    last_message: str = "",
-    process: ProcessOutcome | None = None,
-    requested_session: str | None = None,
-) -> tuple[Result, list[Event]]:
-    run, events = _feed(*lines, cwd=cwd, requested_session=requested_session)
-    return run.finish(process or ProcessOutcome(), asyncio.Event(), last_message), events
-
-
-def _run(tmp_path: Path, **fields: Any) -> Result:
-    return asyncio.run(run_driver("codex", tmp_path, **fields))
-
-
-def _argv(record: Path) -> list[str]:
-    return json.loads(record.read_text(encoding="utf-8"))["argv"]
-
-
-# --- Recorded stream and session sources ---
-
-
-def test_recorded_stream_pins_text_session_and_telemetry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    stub_cli(monkeypatch, tmp_path, "codex", USAGE_FIXTURE.read_text(encoding="utf-8").splitlines())
-
-    result = _run(tmp_path)
-
-    assert result.outcome == Outcome.SUCCESS
-    assert result.error is None
-    assert result.text == "Turn 1 replyTurn 2 reply"
-    assert result.session_id == FIXTURE_THREAD_ID
-    assert result.model is None
-    assert result.usage == Usage(input=22000, output=50, cache_read=10000, cache_write=800, context_used=12015)
-
-
-def test_thread_started_wins_over_last_message_and_stdout_session_line(tmp_path: Path) -> None:
-    result, _ = _parse(
-        _thread(SESSION),
-        _message("ok"),
-        f"session id: {THIRD}",
-        cwd=tmp_path,
-        last_message=f"session id: {OTHER}",
+def test_launch_resume_placement(tmp_path: Path) -> None:
+    driver = CodexDriver()
+    launch = driver.launch(
+        _req(tmp_path, session_id="00000000-0000-4000-8000-000000000001", model="gpt-5", reasoning="low"),
+        Path("/usr/bin/codex"),
+        tmp_path,
+    )
+    assert launch.argv == (
+        "/usr/bin/codex",
+        "exec",
+        "resume",
+        "--json",
+        "--model",
+        "gpt-5",
+        "-c",
+        'model_reasoning_effort="low"',
+        "00000000-0000-4000-8000-000000000001",
+        "-",
     )
 
-    assert result.session_id == SESSION
+
+def test_launch_rejects_system_prompt(tmp_path: Path) -> None:
+    driver = CodexDriver()
+    with pytest.raises(RequestError) as exc_info:
+        driver.launch(_req(tmp_path, system_prompt="be brief"), Path("/usr/bin/codex"), tmp_path)
+    assert exc_info.value.code == ErrorCode.UNSUPPORTED_OPTION
 
 
-def test_last_message_session_line_is_used_without_thread_event(tmp_path: Path) -> None:
-    result, _ = _parse(_message("ok"), f"session id: {THIRD}", cwd=tmp_path, last_message=f"done\nsession id: {OTHER}")
-
-    assert result.session_id == OTHER
-
-
-def test_stdout_session_line_is_used_without_thread_or_last_message(tmp_path: Path) -> None:
-    result, _ = _parse(_message("ok"), f"session id: {THIRD}", cwd=tmp_path)
-
-    assert result.session_id == THIRD
+def test_launch_rejects_owned_json_flag(tmp_path: Path) -> None:
+    driver = CodexDriver()
+    with pytest.raises(RequestError) as exc_info:
+        driver.launch(_req(tmp_path, args=("--json",)), Path("/usr/bin/codex"), tmp_path)
+    assert exc_info.value.code == ErrorCode.INVALID_ARGS
 
 
-def test_fresh_run_without_session_source_stores_no_session_id(tmp_path: Path) -> None:
-    result, _ = _parse(_message("ok"), cwd=tmp_path)
-
-    assert result.outcome == Outcome.SUCCESS
-    assert result.session_id is None
-    assert [w.code for w in result.warnings] == ["no_session_id"]
-
-
-def test_resume_without_exact_session_source_stores_no_session_id(tmp_path: Path) -> None:
-    result, _ = _parse(_message("ok"), cwd=tmp_path, requested_session=SESSION)
-
-    assert result.session_id is None
+@pytest.mark.parametrize("cd_args", [("--cd", "/tmp"), ("--cd=/tmp",), ("-C", "/tmp"), ("-C/tmp",)])
+def test_launch_rejects_cd_flags(tmp_path: Path, cd_args: tuple[str, ...]) -> None:
+    driver = CodexDriver()
+    with pytest.raises(RequestError) as exc_info:
+        driver.launch(_req(tmp_path, args=cd_args), Path("/usr/bin/codex"), tmp_path)
+    assert exc_info.value.code == ErrorCode.INVALID_ARGS
 
 
-def test_last_message_file_is_answer_when_no_agent_item_exists(tmp_path: Path) -> None:
-    result, _ = _parse(_thread(SESSION), cwd=tmp_path, last_message="from the file\n")
-
-    assert result.text == "from the file"
-
-
-def test_blank_last_message_falls_back_to_agent_items(tmp_path: Path) -> None:
-    result, _ = _parse(_thread(SESSION), _message("from items"), cwd=tmp_path, last_message="   \n")
-
-    assert result.text == "from items"
-
-
-# --- Outcome classification ---
-
-
-def test_nonzero_exit_with_agent_message_is_retryable_execution_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    stub_cli(monkeypatch, tmp_path, "codex", [_thread(SESSION), _message("partial")], exit_code=2)
-
-    result = _run(tmp_path)
-
-    assert result.outcome == Outcome.RETRYABLE
-    assert result.error is not None and result.error.code == "execution_error"
-    assert result.text == "partial"
-    assert result.returncode == 2
+@pytest.mark.parametrize(
+    "conflict_args",
+    [
+        ("-c", "model_reasoning_effort=high"),
+        ("--config", "model_reasoning_effort=high"),
+        ("-c=model_reasoning_effort=high",),
+        ("--config=model_reasoning_effort=high",),
+    ],
+)
+def test_launch_rejects_conflicting_reasoning_config(tmp_path: Path, conflict_args: tuple[str, ...]) -> None:
+    driver = CodexDriver()
+    with pytest.raises(RequestError) as exc_info:
+        driver.launch(_req(tmp_path, reasoning="low", args=conflict_args), Path("/usr/bin/codex"), tmp_path)
+    assert exc_info.value.code == ErrorCode.INVALID_ARGS
 
 
-def test_auth_diagnostic_beats_a_nonzero_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Rewritten: Refract mapped this to execution_error.
-    # The Phase 5 invariant makes an auth diagnostic win over the exit code.
-    stub_cli(monkeypatch, tmp_path, "codex", ["error: unknown option, not logged in"], exit_code=2)
+def test_launch_accepts_unrelated_c_args_with_reasoning(tmp_path: Path) -> None:
+    driver = CodexDriver()
+    launch = driver.launch(
+        _req(tmp_path, reasoning="low", args=("-c", "foo=bar", "--config", 'sandbox_mode="read-only"')),
+        Path("/usr/bin/codex"),
+        tmp_path,
+    )
+    assert launch.argv == (
+        "/usr/bin/codex",
+        "exec",
+        "--json",
+        "-c",
+        'model_reasoning_effort="low"',
+        "-c",
+        "foo=bar",
+        "--config",
+        'sandbox_mode="read-only"',
+        "-",
+    )
 
-    result = _run(tmp_path)
 
+def test_launch_attached_reasoning_conflict_and_unrelated_config(tmp_path: Path) -> None:
+    driver = CodexDriver()
+    with pytest.raises(RequestError) as exc_info:
+        driver.launch(
+            _req(tmp_path, reasoning="low", args=("-cmodel_reasoning_effort=high",)),
+            Path("/usr/bin/codex"),
+            tmp_path,
+        )
+    assert exc_info.value.code == ErrorCode.INVALID_ARGS
+    launch = driver.launch(
+        _req(tmp_path, reasoning="low", args=("-cmodel=custom",)),
+        Path("/usr/bin/codex"),
+        tmp_path,
+    )
+    assert "-cmodel=custom" in launch.argv
+
+
+def test_launch_rejects_conflicting_model_flag(tmp_path: Path) -> None:
+    driver = CodexDriver()
+    with pytest.raises(RequestError) as exc_info:
+        driver.launch(_req(tmp_path, model="gpt-5", args=("-m", "other")), Path("/usr/bin/codex"), tmp_path)
+    assert exc_info.value.code == ErrorCode.INVALID_ARGS
+
+
+def test_launch_rejects_attached_model_flag_but_accepts_unrelated_short_option(tmp_path: Path) -> None:
+    driver = CodexDriver()
+    with pytest.raises(RequestError) as exc_info:
+        driver.launch(_req(tmp_path, model="gpt-5", args=("-mother",)), Path("/usr/bin/codex"), tmp_path)
+    assert exc_info.value.code == ErrorCode.INVALID_ARGS
+    launch = driver.launch(_req(tmp_path, args=("-mystery",)), Path("/usr/bin/codex"), tmp_path)
+    assert "-mystery" in launch.argv
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"model": "gpt-5"},
+        {"reasoning": "high"},
+        {"session_id": "sess-1", "model": "gpt-5", "reasoning": "low"},
+    ],
+)
+def test_launch_never_adds_permission_flags(tmp_path: Path, kwargs: dict[str, object]) -> None:
+    driver = CodexDriver()
+    launch = driver.launch(_req(tmp_path, **kwargs), Path("/usr/bin/codex"), tmp_path)
+    for token in launch.argv:
+        flag = token.split("=", 1)[0]
+        assert flag not in _FORBIDDEN_PERMISSION_FLAGS
+    assert "-o" not in launch.argv
+    assert "--output-last-message" not in launch.argv
+
+
+def test_parser_thread_started_agent_message_and_usage(tmp_path: Path) -> None:
+    parser = CodexDriver().parser(_req(tmp_path))
+    events = [
+        *parser.feed_json({"type": "thread.started", "thread_id": "thread-123"}),
+        *parser.feed_json({"type": "turn.started"}),
+        *parser.feed_json(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "id-0003",
+                    "type": "agent_message",
+                    "text": "session id: 11111111-1111-4111-8111-111111111111\nPONG",
+                },
+            }
+        ),
+        *parser.feed_json(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 15374,
+                    "cached_input_tokens": 7808,
+                    "cache_write_input_tokens": 0,
+                    "output_tokens": 6,
+                    "reasoning_output_tokens": 0,
+                },
+            }
+        ),
+    ]
+    from coding_agent_cli.events import MessageCompleted, MessageStarted, SessionIdentified, TextDelta, UsageUpdated
+    from coding_agent_cli.types import Usage
+
+    assert events == [
+        SessionIdentified(session_id="thread-123", entity_id=None),
+        MessageStarted(entity_id="id-0003"),
+        TextDelta(text="session id: 11111111-1111-4111-8111-111111111111\nPONG", entity_id="id-0003"),
+        MessageCompleted(entity_id="id-0003"),
+        UsageUpdated(usage=Usage(input=15374, output=6, cache_read=7808, cache_write=0)),
+    ]
+    facts = parser.finish({})
+    assert facts.session_id == "thread-123"
+    assert facts.model is None
+    assert facts.num_turns is None
+
+
+def test_parser_no_session_id_regex_over_model_text(tmp_path: Path) -> None:
+    parser = CodexDriver().parser(_req(tmp_path))
+    list(
+        parser.feed_json(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "id-0001",
+                    "type": "agent_message",
+                    "text": "session id: 11111111-1111-4111-8111-111111111111",
+                },
+            }
+        )
+    )
+    facts = parser.finish({})
+    assert facts.session_id is None
+
+
+def test_command_execution_produces_tool_started_with_activity_command(tmp_path: Path) -> None:
+    from coding_agent_cli.events import ToolCompleted, ToolStarted
+
+    parser = CodexDriver().parser(_req(tmp_path))
+    started = list(
+        parser.feed_json(
+            {
+                "type": "item.started",
+                "item": {
+                    "id": "id-0004",
+                    "type": "command_execution",
+                    "command": "/usr/bin/zsh -lc ls",
+                    "aggregated_output": "",
+                    "exit_code": None,
+                    "status": "in_progress",
+                },
+            }
+        )
+    )
+    completed = list(
+        parser.feed_json(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "id-0004",
+                    "type": "command_execution",
+                    "command": "/usr/bin/zsh -lc ls",
+                    "aggregated_output": "calc.py\nhello.txt\n",
+                    "exit_code": 0,
+                    "status": "completed",
+                },
+            }
+        )
+    )
+    failed = list(
+        parser.feed_json(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "id-0005",
+                    "type": "command_execution",
+                    "command": "/usr/bin/zsh -lc false",
+                    "aggregated_output": "boom\n",
+                    "exit_code": 1,
+                    "status": "failed",
+                },
+            }
+        )
+    )
+    assert started == [
+        ToolStarted(
+            tool="command_execution",
+            activity="command",
+            input={"command": "/usr/bin/zsh -lc ls"},
+            entity_id="id-0004",
+        )
+    ]
+    assert completed == [
+        ToolCompleted(
+            tool="command_execution",
+            status="completed",
+            output="calc.py\nhello.txt\n",
+            entity_id="id-0004",
+        )
+    ]
+    assert failed[-1] == ToolCompleted(
+        tool="command_execution",
+        status="error",
+        output="boom\n",
+        entity_id="id-0005",
+    )
+
+
+def test_file_change_produces_file_changed(tmp_path: Path) -> None:
+    from coding_agent_cli.events import FileChanged, ToolCompleted, ToolStarted
+
+    parser = CodexDriver().parser(_req(tmp_path))
+    started = list(
+        parser.feed_json(
+            {
+                "type": "item.started",
+                "item": {
+                    "id": "id-0005",
+                    "type": "file_change",
+                    "changes": [{"path": "/work/repo/hello.txt", "kind": "update"}],
+                    "status": "in_progress",
+                },
+            }
+        )
+    )
+    completed = list(
+        parser.feed_json(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "id-0005",
+                    "type": "file_change",
+                    "changes": [
+                        {"path": "/work/repo/hello.txt", "kind": "update"},
+                        {"path": "/work/repo/new.txt", "kind": "add"},
+                        {"path": "/work/repo/old.txt", "kind": "delete"},
+                    ],
+                    "status": "completed",
+                },
+            }
+        )
+    )
+    assert started == [
+        ToolStarted(
+            tool="file_change",
+            activity="tool_call",
+            input={"changes": [{"path": "/work/repo/hello.txt", "kind": "update"}]},
+            entity_id="id-0005",
+        )
+    ]
+    assert completed == [
+        ToolCompleted(tool="file_change", status="completed", output=None, entity_id="id-0005"),
+        FileChanged(path="/work/repo/hello.txt", change="modified", evidence="reported", entity_id="id-0005"),
+        FileChanged(path="/work/repo/new.txt", change="added", evidence="reported", entity_id="id-0005"),
+        FileChanged(path="/work/repo/old.txt", change="deleted", evidence="reported", entity_id="id-0005"),
+    ]
+
+
+@pytest.mark.parametrize("kind", ["create", "modify", "remove"])
+def test_file_change_uses_only_codex_patch_kinds(tmp_path: Path, kind: str) -> None:
+    from coding_agent_cli.events import FileChanged
+
+    parser = CodexDriver().parser(_req(tmp_path))
+    events = list(
+        parser.feed_json(
+            {"type": "item.completed", "item": {"type": "file_change", "changes": [{"path": "a", "kind": kind}]}}
+        )
+    )
+    assert isinstance(events[-1], FileChanged)
+    assert events[-1].change == "unknown"
+
+
+def test_mcp_tool_name_uses_schema_field_consistently(tmp_path: Path) -> None:
+    parser = CodexDriver().parser(_req(tmp_path))
+    started = list(
+        parser.feed_json({"type": "item.started", "item": {"type": "mcp_tool_call", "name": "unsupported-alias"}})
+    )
+    completed = list(
+        parser.feed_json(
+            {
+                "type": "item.completed",
+                "item": {"type": "mcp_tool_call", "name": "unsupported-alias", "status": "completed"},
+            }
+        )
+    )
+    assert started == []
+    assert completed == []
+
+
+def test_parser_mcp_web_search_reasoning_error_item_and_todo_list(tmp_path: Path) -> None:
+    from coding_agent_cli.events import Notice, ReasoningDelta, ToolCompleted, ToolStarted
+
+    parser = CodexDriver().parser(_req(tmp_path))
+    events = [
+        *parser.feed_json({"type": "item.started", "item": {"id": "id-1", "type": "mcp_tool_call", "tool": "fetch"}}),
+        *parser.feed_json(
+            {
+                "type": "item.completed",
+                "item": {"id": "id-1", "type": "mcp_tool_call", "tool": "fetch", "status": "completed", "result": "ok"},
+            }
+        ),
+        *parser.feed_json({"type": "item.started", "item": {"id": "id-2", "type": "web_search", "query": "python"}}),
+        *parser.feed_json(
+            {"type": "item.completed", "item": {"id": "id-2", "type": "web_search", "status": "completed"}}
+        ),
+        *parser.feed_json({"type": "item.completed", "item": {"id": "id-3", "type": "reasoning", "text": "thinking"}}),
+        *parser.feed_json({"type": "item.completed", "item": {"id": "id-4", "type": "error", "message": "warn"}}),
+        *parser.feed_json({"type": "item.completed", "item": {"id": "id-5", "type": "todo_list", "items": []}}),
+    ]
+    assert events == [
+        ToolStarted(tool="fetch", activity="tool_call", input=None, entity_id="id-1"),
+        ToolCompleted(tool="fetch", status="completed", output="ok", entity_id="id-1"),
+        ToolStarted(tool="web_search", activity="tool_call", input=None, entity_id="id-2"),
+        ToolCompleted(tool="web_search", status="completed", output=None, entity_id="id-2"),
+        ReasoningDelta(text="thinking", entity_id="id-3"),
+        Notice(code="error", message="warn", entity_id="id-4"),
+    ]
+
+
+@pytest.mark.parametrize("with_id", [False, True])
+@pytest.mark.parametrize("with_start", [False, True])
+def test_tool_completion_is_always_paired(with_id: bool, with_start: bool, tmp_path: Path) -> None:
+    from coding_agent_cli.events import ToolCompleted, ToolStarted
+
+    parser = CodexDriver().parser(_req(tmp_path))
+    item = {"type": "web_search", "query": "python"}
+    if with_id:
+        item["id"] = "search-1"
+    events = []
+    if with_start:
+        events.extend(parser.feed_json({"type": "item.started", "item": item}))
+    events.extend(parser.feed_json({"type": "item.completed", "item": item}))
+    assert isinstance(events[0], ToolStarted)
+    assert isinstance(events[-1], ToolCompleted)
+    assert [type(event) for event in events] == [ToolStarted, ToolCompleted]
+    assert events[0].entity_id == ("search-1" if with_id else None)
+    assert events[-1].entity_id == ("search-1" if with_id else None)
+
+
+@pytest.mark.parametrize("with_id", [False, True])
+def test_consecutive_completed_only_tools_are_each_paired(with_id: bool, tmp_path: Path) -> None:
+    from coding_agent_cli.events import ToolCompleted, ToolStarted
+
+    parser = CodexDriver().parser(_req(tmp_path))
+    events = []
+    for index in range(2):
+        item = {"type": "file_change", "status": "completed", "changes": []}
+        if with_id:
+            item["id"] = f"change-{index}"
+        events.extend(parser.feed_json({"type": "item.completed", "item": item}))
+    assert [type(event) for event in events] == [ToolStarted, ToolCompleted, ToolStarted, ToolCompleted]
+
+
+def test_tool_status_error_alias_is_not_a_failure(tmp_path: Path) -> None:
+    from coding_agent_cli.events import ToolCompleted
+
+    parser = CodexDriver().parser(_req(tmp_path))
+    item = {"id": "call-1", "type": "mcp_tool_call", "tool": "fetch", "status": "error"}
+    events = list(parser.feed_json({"type": "item.completed", "item": item}))
+    assert isinstance(events[-1], ToolCompleted)
+    assert events[-1].status == "unknown"
+
+
+def test_empty_agent_message_emits_empty_delta(tmp_path: Path) -> None:
+    from coding_agent_cli.events import MessageCompleted, MessageStarted, TextDelta
+
+    parser = CodexDriver().parser(_req(tmp_path))
+    assert list(parser.feed_json({"type": "item.completed", "item": {"type": "agent_message", "text": ""}})) == [
+        MessageStarted(entity_id=None),
+        TextDelta(text="", entity_id=None),
+        MessageCompleted(entity_id=None),
+    ]
+
+
+def test_specific_codex_error_survives_later_generic_and_success_clears(tmp_path: Path) -> None:
+    parser = CodexDriver().parser(_req(tmp_path))
+    list(parser.feed_json({"type": "error", "message": "401 Unauthorized: missing authentication"}))
+    list(parser.feed_json({"type": "turn.failed", "error": {"message": "stream closed"}}))
+    facts = parser.finish({})
+    assert facts.error is not None
+    assert facts.error.code == ErrorCode.AUTH
+    list(parser.feed_json({"type": "turn.completed"}))
+    assert parser.finish({}).error is None
+
+
+def test_command_execution_without_integer_exit_code_is_unknown(tmp_path: Path) -> None:
+    from coding_agent_cli.events import ToolCompleted
+
+    parser = CodexDriver().parser(_req(tmp_path))
+    events = list(
+        parser.feed_json({"type": "item.completed", "item": {"type": "command_execution", "status": "completed"}})
+    )
+    assert events[-1] == ToolCompleted(tool="command_execution", status="unknown", output=None, entity_id=None)
+
+
+def test_turn_failed_auth_produces_agent_fatal(tmp_path: Path) -> None:
+    from coding_agent_cli._classify import RunFacts, classify
+    from coding_agent_cli.types import Outcome
+
+    parser = CodexDriver().parser(_req(tmp_path))
+    list(parser.feed_json({"type": "error", "message": "Reconnecting... 1/5"}))
+    list(
+        parser.feed_json(
+            {
+                "type": "turn.failed",
+                "error": {"message": "unexpected status 401 Unauthorized: Missing bearer or basic authentication"},
+            }
+        )
+    )
+    facts = parser.finish({})
+    assert facts.error is not None
+    assert facts.error.code == ErrorCode.AUTH
+    result = classify(RunFacts(returncode=1), facts, text="")
     assert result.outcome == Outcome.AGENT_FATAL
-    assert result.error == Diagnostic(code="auth", message="error: unknown option, not logged in")
-
-
-def test_timeout_keeps_partial_text_and_timeout_class(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    stub_cli(monkeypatch, tmp_path, "codex", [_thread(SESSION), _message("partial")], sleep_s=5)
-
-    result = _run(tmp_path, timeout_s=0.5)
-
-    assert result.outcome == Outcome.RETRYABLE
-    assert result.error is not None and result.error.code == "timeout"
-    assert result.text == "partial"
-
-
-def test_fatal_token_with_agent_message_does_not_fail_the_run(tmp_path: Path) -> None:
-    result, _ = _parse("Error: not logged in", _message("answer"), cwd=tmp_path)
-
-    assert result.outcome == Outcome.SUCCESS
-    assert result.text == "answer"
-
-
-def test_fatal_token_in_diagnostic_without_agent_message_is_agent_fatal_auth(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Rewritten: Refract returned TARGET_FATAL fatal_backend. The auth keyword now maps to agent_fatal with code auth.
-    stub_cli(monkeypatch, tmp_path, "codex", ["Error: not logged in"])
-
-    result = _run(tmp_path)
-
-    assert result.outcome == Outcome.AGENT_FATAL
-    assert result.error == Diagnostic(code="auth", message="Error: not logged in")
-
-
-def test_exit_zero_without_agent_message_is_no_output_and_never_returns_jsonl(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Rewritten: Refract returned request_fatal. The Phase 5 invariant maps empty output to no_output.
-    stub_cli(monkeypatch, tmp_path, "codex", [_thread(SESSION), _turn()])
-
-    result = _run(tmp_path)
-
-    assert result.outcome == Outcome.RETRYABLE
-    assert result.error is not None and result.error.code == "no_output"
-    assert result.text == ""
-
-
-def test_blank_last_message_without_agent_message_is_no_output(tmp_path: Path) -> None:
-    result, _ = _parse(_thread(SESSION), cwd=tmp_path, last_message="  \n")
-
-    assert result.outcome == Outcome.RETRYABLE
-    assert result.error is not None and result.error.code == "no_output"
-
-
-def test_no_output_message_names_the_missing_assistant_text(tmp_path: Path) -> None:
-    result, _ = _parse(cwd=tmp_path, last_message="   ")
-
     assert result.error is not None
-    assert result.error.message == "the CLI produced no assistant text"
+    assert result.error.code == ErrorCode.AUTH
+    assert result.model is None
 
 
-# --- Parsed events ---
+def test_parser_unstructured_stdout_goes_to_error_text(tmp_path: Path) -> None:
+    parser = CodexDriver().parser(_req(tmp_path))
+    assert list(parser.feed_text("fatal panic on stdout", stream="stdout")) == []
+    facts = parser.finish({})
+    assert facts.error_text == "fatal panic on stdout"
 
 
-def test_thread_started_emits_session_once(tmp_path: Path) -> None:
-    _, events = _feed(_thread(SESSION), _thread(SESSION), cwd=tmp_path)
+def _codex_scenarios() -> list[str]:
+    directory = Path(__file__).parent / "fixtures" / "recorded" / "codex" / "0.169.0"
+    return sorted(p.name.removesuffix(".meta.json") for p in directory.glob("*.meta.json"))
 
-    assert [e for e in events if isinstance(e, SessionIdentified)] == [SessionIdentified(session_id=SESSION)]
+
+@pytest.mark.parametrize("scenario", _codex_scenarios())
+def test_recorded_codex_replay_and_truncation(tmp_path: Path, scenario: str) -> None:
+    import json
+
+    from coding_agent_cli.events import RunCompleted, TextDelta
+    from coding_agent_cli.types import Outcome
+    from tests.replay import FIXTURES, replay, replay_truncated
+
+    meta = json.loads((FIXTURES / "codex" / "0.169.0" / f"{scenario}.meta.json").read_text(encoding="utf-8"))
+    events, result = replay(CodexDriver().parser(_req(tmp_path)), "codex", "0.169.0", scenario)
+
+    assert result.outcome == Outcome(meta["outcome"])
+    actual_code = result.error.code.value if result.error is not None else None
+    assert actual_code == meta["code"]
+    assert result.model is None
+    assert isinstance(events[-1], RunCompleted)
+    assert [e.sequence for e in events] == list(range(1, len(events) + 1))
+
+    text_deltas = [e for e in events if isinstance(e, TextDelta)]
+    for index, delta in enumerate(text_deltas, 1):
+        _, truncated = replay_truncated(
+            CodexDriver().parser(_req(tmp_path)),
+            "codex",
+            "0.169.0",
+            scenario,
+            after_text_deltas=index,
+        )
+        assert truncated.text == delta.text
+        assert truncated.model is None
 
 
-def test_item_started_emits_message_and_tool_start_events(tmp_path: Path) -> None:
-    _, events = _feed(
-        _event(type="item.started", item={"id": "m", "type": "agent_message"}),
-        _event(type="item.started", item={"id": "t", "type": "tool_call", "name": "bash", "input": {"cmd": "ls"}}),
-        _event(type="item.started", item={"id": "u", "type": "tool_call", "name": "Bash"}),
-        cwd=tmp_path,
+async def test_codex_driver_run_end_to_end(tmp_path: Path) -> None:
+    import asyncio
+    import sys
+
+    from coding_agent_cli.events import Event, RunCompleted, TextDelta
+    from coding_agent_cli.types import Outcome
+
+    script = tmp_path / "fake-codex"
+    script.write_text(
+        "\n".join(
+            [
+                f"#!{sys.executable}",
+                "import sys",
+                "sys.stdin.read()",
+                'print(\'{"type": "thread.started", "thread_id": "sess-e2e"}\', flush=True)',
+                'print(\'{"type": "item.completed", "item": '
+                '{"id": "m1", "type": "agent_message", "text": "ok"}}\', flush=True)',
+                'print(\'{"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 2}}\', flush=True)',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
     )
+    script.chmod(0o755)
 
-    assert [e.kind for e in events] == ["assistant.message.started", "tool.started", "tool.started"]
-    assert events[1] == ToolStarted(tool="bash", activity="command", input={"cmd": "ls"}, entity_id="tool-2")
-    assert isinstance(events[2], ToolStarted) and events[2].activity == "tool_call"
-
-
-def test_item_completed_emits_text_and_tool_completion_events(tmp_path: Path) -> None:
-    _, events = _feed(
-        _event(type="item.started", item={"id": "t", "type": "tool_call", "name": "bash"}),
-        _event(type="item.completed", item={"id": "t", "type": "tool_call", "status": "failed"}),
-        _event(type="item.completed", item={"id": "m", "type": "agent_message", "text": "hi"}),
-        cwd=tmp_path,
-    )
-
-    assert events[1] == ToolCompleted(status="error", entity_id="tool-1")
-    assert events[2] == TextDelta(text="hi", entity_id="msg-1")
-    assert events[3].kind == "assistant.message.completed"
-
-
-def test_item_completion_without_start_uses_fallback_entity_ids(tmp_path: Path) -> None:
-    _, events = _feed(
-        _event(type="item.completed", item={"id": "orphan", "type": "tool_call", "status": "completed"}), cwd=tmp_path
-    )
-
-    assert events == [ToolCompleted(status="completed", entity_id="tool-1")]
-
-
-@pytest.mark.parametrize("item", [None, "text", 3, ["x"]])
-def test_non_object_item_is_ignored(tmp_path: Path, item: object) -> None:
-    result, events = _parse(
-        _event(type="item.started", item=item), _event(type="item.completed", item=item), cwd=tmp_path
-    )
-
-    assert events == []
-    assert result.outcome == Outcome.RETRYABLE
-
-
-def test_reasoning_items_and_non_json_diagnostics_are_never_emitted_as_text(tmp_path: Path) -> None:
-    _, events = _feed(
-        _event(type="item.completed", item={"id": "r", "type": "reasoning", "text": "secret thoughts"}),
-        "some diagnostic line",
-        cwd=tmp_path,
-    )
-
-    assert events == []
-
-
-def test_turn_completed_usage_updates_counters_and_emits(tmp_path: Path) -> None:
-    result, events = _parse(_turn(1000, 50, cached_input_tokens=200), cwd=tmp_path)
-
-    assert result.usage.input == 1000
-    assert result.usage.cache_read == 200
-    assert events == [UsageUpdated(usage=Usage(input=1000, output=50, cache_read=200, context_used=1050))]
-
-
-def test_cached_input_is_not_added_twice(tmp_path: Path) -> None:
-    # Codex input_tokens already includes cached_input_tokens, so the normalized input stays 1000.
-    result, _ = _parse(_turn(1000, 10, cached_input_tokens=200), cwd=tmp_path)
-
-    assert result.usage.input == 1000
-
-
-def test_turn_completed_without_usage_object_is_ignored(tmp_path: Path) -> None:
-    _, events = _feed(_event(type="turn.completed"), _event(type="turn.completed", usage="not-a-dict"), cwd=tmp_path)
-
-    assert events == []
-
-
-def test_turn_completed_without_input_leaves_input_unavailable(tmp_path: Path) -> None:
-    result, _ = _parse(_event(type="turn.completed", usage={"output_tokens": 7}), cwd=tmp_path)
-
-    assert result.usage.input is None
-    assert result.usage.output == 7
-
-
-def test_malformed_usage_fields_are_ignored_and_do_not_alter_the_outcome(tmp_path: Path) -> None:
-    result, events = _parse(
-        _message("ok"),
-        _event(type="turn.completed", usage={"input_tokens": "x", "output_tokens": True, "cached_input_tokens": -1}),
-        _turn(100, 5),
-        cwd=tmp_path,
-    )
+    seen: list[Event] = []
+    async with asyncio.timeout(1.5):
+        result = await CodexDriver().run(
+            _req(tmp_path, executable=str(script)),
+            on_event=seen.append,
+        )
 
     assert result.outcome == Outcome.SUCCESS
     assert result.text == "ok"
-    assert result.usage.input == 100
-    assert result.usage.output == 5
-
-
-def test_turns_sum_across_consecutive_turn_completed_events(tmp_path: Path) -> None:
-    result, _ = _parse(_turn(100, 10), _turn(200, 20), cwd=tmp_path)
-
-    assert result.usage.input == 300
-    assert result.usage.output == 30
-    assert result.usage.context_used == 220
-
-
-def test_final_usage_records_totals_for_fresh_runs(tmp_path: Path) -> None:
-    result, _ = _parse(
-        _turn(100, 10),
-        _event(type="thread.completed", usage={"input_tokens": 500, "output_tokens": 40, "cached_input_tokens": 30}),
-        cwd=tmp_path,
-    )
-
-    assert result.usage.input == 500
-    assert result.usage.output == 40
-    assert result.usage.cache_read == 30
-
-
-def test_final_usage_is_not_recorded_on_resume(tmp_path: Path) -> None:
-    result, _ = _parse(
-        _turn(100, 10),
-        _event(type="summary", usage={"input_tokens": 500, "output_tokens": 40}),
-        cwd=tmp_path,
-        requested_session=SESSION,
-    )
-
-    assert result.usage.input == 100
-
-
-def test_final_usage_without_totals_to_record_emits_nothing(tmp_path: Path) -> None:
-    _, events = _feed(_event(type="thread.completed", usage={"other": 1}), cwd=tmp_path)
-
-    assert events == []
-
-
-@pytest.mark.parametrize(
-    ("tool_name", "expected"),
-    [("bash", "command"), ("Bash", "tool_call"), ("bash ", "tool_call"), ("shell", "tool_call")],
-)
-def test_tool_activity_allow_list_is_exact_and_case_sensitive(tool_name: str, expected: str) -> None:
-    assert classify_tool_activity("codex", tool_name) == expected
-
-
-def test_diagnostic_lines_are_bounded_and_a_later_fatal_line_is_kept(tmp_path: Path) -> None:
-    noise = [f"noise {i}" for i in range(MAX_DIAGNOSTICS + 10)]
-    result, _ = _parse(*noise, "fatal: not logged in", cwd=tmp_path)
-
-    assert result.error is not None and result.error.code == "auth"
-    assert result.error.message.splitlines()[-1] == "fatal: not logged in"
-    assert len(result.error.message.splitlines()) == MAX_DIAGNOSTICS + 1
-
-
-def test_toml_string_quotes_and_escapes_control_characters() -> None:
-    assert _toml_string("high") == '"high"'
-    assert _toml_string('a"b\\c') == '"a\\"b\\\\c"'
-    assert _toml_string("x\ny\x01\x7f") == '"x\\ny\\u0001\\u007F"'
-
-
-# --- Transport: argv, stdin, cwd, temporary file ---
-
-
-def test_resume_argv_and_prompt_delivery_are_pinned(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path
-) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", [_thread(SESSION), _message("ok")], record=record)
-
-    _run(tmp_path, prompt="the prompt", session_id=OTHER)
-
-    payload = json.loads(record.read_text(encoding="utf-8"))
-    argv = payload["argv"]
-    assert argv[:4] == TRANSPORT_PREFIX
-    assert Path(argv[4]).parent == temp_dir
-    assert Path(argv[4]).name.startswith("coding-agent-cli-")
-    assert argv[5:] == ["resume", OTHER, "-"]
-    assert payload["stdin"] == "the prompt"
-    assert Path(payload["cwd"]).resolve() == tmp_path.resolve()
-
-
-def test_driver_never_passes_a_working_directory_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", [_message("ok")], record=record)
-
-    _run(tmp_path, model="m", reasoning="high", args=("--x",))
-
-    argv = _argv(record)
-    assert "--cd" not in argv and "-C" not in argv
-
-
-@pytest.mark.asyncio
-async def test_portable_options_map_to_codex_flags_before_caller_args(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path
-) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", [_message("ok")], record=record)
-
-    await run_driver("codex", tmp_path, model="m", reasoning="high", args=("--x",))
-
-    argv = _argv(record)
-    assert argv[:4] == TRANSPORT_PREFIX
-    assert argv[5:] == ["--model", "m", "-c", 'model_reasoning_effort="high"', "--x", "-"]
-
-
-def test_reasoning_value_is_toml_quoted_in_the_config_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", [_message("ok")], record=record)
-
-    _run(tmp_path, reasoning='h"igh')
-
-    argv = _argv(record)
-    assert argv[argv.index("-c") + 1] == 'model_reasoning_effort="h\\"igh"'
-
-
-def test_caller_args_pass_through_and_lowercase_config_flag_is_allowed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", [_message("ok")], record=record)
-
-    result = _run(tmp_path, args=("-c", "profile=fast", "--skip-git-repo-check"))
-
-    assert result.outcome == Outcome.SUCCESS
-    assert _argv(record)[5:] == ["-c", "profile=fast", "--skip-git-repo-check", "-"]
-
-
-@pytest.mark.parametrize(
-    "options",
-    [
-        pytest.param({}, id="none"),
-        pytest.param({"model": "m"}, id="model"),
-        pytest.param({"reasoning": "high"}, id="reasoning"),
-        pytest.param({"session_id": OTHER}, id="resume"),
-        pytest.param({"args": ("--x",)}, id="args"),
-        pytest.param({"model": "m", "reasoning": "high", "session_id": OTHER, "args": ("--x",)}, id="all"),
-    ],
-)
-def test_no_approval_sandbox_or_bypass_flag_is_ever_added(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, Any]
-) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", [_message("ok")], record=record)
-
-    _run(tmp_path, **options)
-
-    argv = _argv(record)
-    for flag in FORBIDDEN_FLAGS:
-        assert not any(token == flag or token.startswith(f"{flag}=") for token in argv), flag
-
-
-@pytest.mark.parametrize(
-    "args",
-    [
-        pytest.param(("--cd", "/tmp"), id="cd"),
-        pytest.param(("--cd=/tmp",), id="cd-equals"),
-        pytest.param(("-C", "/tmp"), id="short-C"),
-        pytest.param(("-C/tmp",), id="short-C-attached"),
-    ],
-)
-@pytest.mark.asyncio
-async def test_working_directory_args_are_rejected_before_spawn(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
-) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", ["never"], record=record)
-
-    result = await run_driver("codex", tmp_path, args=args)
-
-    assert result.outcome == Outcome.REQUEST_FATAL
-    assert result.error is not None and result.error.code == "invalid_args"
-    assert not record.exists()
-
-
-@pytest.mark.parametrize(
-    "args",
-    [
-        pytest.param(("--json",), id="json"),
-        pytest.param(("-o", "/x"), id="o"),
-        pytest.param(("--output-last-message=/x",), id="output-equals"),
-    ],
-)
-@pytest.mark.asyncio
-async def test_raw_args_cannot_override_a_driver_owned_transport_flag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
-) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", ["never"], record=record)
-
-    result = await run_driver("codex", tmp_path, args=args)
-
-    assert result.outcome == Outcome.REQUEST_FATAL
-    assert result.error is not None and result.error.code == "invalid_args"
-    assert not record.exists()
-
-
-@pytest.mark.parametrize(
-    ("options", "args"),
-    [
-        pytest.param({"model": "m"}, ("--model", "other"), id="model"),
-        pytest.param({"model": "m"}, ("--model=other",), id="model-equals"),
-        pytest.param({"reasoning": "high"}, ("-c", "model_reasoning_effort=low"), id="config"),
-        pytest.param({"reasoning": "high"}, ("--config=model_reasoning_effort=low",), id="config-equals"),
-    ],
-)
-@pytest.mark.asyncio
-async def test_raw_args_cannot_conflict_with_a_portable_option(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, Any], args: tuple[str, ...]
-) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", ["never"], record=record)
-
-    result = await run_driver("codex", tmp_path, args=args, **options)
-
-    assert result.outcome == Outcome.REQUEST_FATAL
-    assert result.error is not None and result.error.code == "invalid_args"
-    assert not record.exists()
-
-
-@pytest.mark.asyncio
-async def test_system_prompt_is_unsupported_and_spawns_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", ["never"], record=record)
-
-    result = await run_driver("codex", tmp_path, system_prompt="sp")
-
-    assert result.outcome == Outcome.REQUEST_FATAL
-    assert result.error == Diagnostic(
-        code="unsupported_option", message="driver 'codex' does not support system_prompt"
-    )
-    assert not record.exists()
-
-
-@pytest.mark.asyncio
-async def test_bad_cwd_is_rejected_before_spawn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", ["never"], record=record)
-
-    result = await run_driver("codex", tmp_path / "absent")
-
-    assert result.outcome == Outcome.REQUEST_FATAL
-    assert result.error is not None and result.error.code == "bad_cwd"
-    assert not record.exists()
-
-
-@pytest.mark.parametrize("args", [pytest.param(("--",), id="dashdash"), pytest.param(("a\x00",), id="nul")])
-@pytest.mark.asyncio
-async def test_invalid_raw_args_are_rejected_before_spawn(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
-) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", ["never"], record=record)
-
-    result = await run_driver("codex", tmp_path, args=args)
-
-    assert result.outcome == Outcome.REQUEST_FATAL
-    assert result.error is not None and result.error.code == "invalid_args"
-    assert not record.exists()
-
-
-@pytest.mark.asyncio
-async def test_env_values_and_prompt_never_reach_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", [_message("ok")], record=record)
-
-    await run_driver("codex", tmp_path, prompt="secret prompt", env={"CODEX_API_TOKEN": "s3cr3t"})
-
-    argv = _argv(record)
-    assert not any("s3cr3t" in token or "secret prompt" in token for token in argv)
-
-
-@pytest.mark.asyncio
-async def test_cancel_before_start_is_cancelled_and_spawns_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", ["never"], record=record)
-    cancel = asyncio.Event()
-    cancel.set()
-
-    result = await run_driver("codex", tmp_path, cancel=cancel)
-
-    assert result.outcome == Outcome.CANCELLED
-    assert not record.exists()
-
-
-@pytest.mark.asyncio
-async def test_temporary_last_message_file_is_removed_on_success_and_on_timeout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_dir: Path
-) -> None:
-    record = tmp_path / "record.json"
-    stub_cli(monkeypatch, tmp_path, "codex", [_message("ok")], record=record)
-    await run_driver("codex", tmp_path)
-    assert not Path(_argv(record)[4]).exists()
-
-    stub_cli(monkeypatch, tmp_path, "codex", [_message("ok")], sleep_s=5)
-    timed_out = await run_driver("codex", tmp_path, timeout_s=0.5)
-    assert timed_out.error is not None and timed_out.error.code == "timeout"
-    assert list(temp_dir.iterdir()) == []
-
-
-@pytest.mark.asyncio
-async def test_last_message_file_is_written_by_the_cli_and_read_back(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    stub_cli(monkeypatch, tmp_path, "codex", [_thread(SESSION)], last_message="final answer")
-
-    result = await run_driver("codex", tmp_path)
-
-    assert result.outcome == Outcome.SUCCESS
-    assert result.text == "final answer"
-    assert result.session_id == SESSION
-
-
-def test_driver_registry_returns_the_codex_driver() -> None:
-    assert isinstance(DriverRegistry().get("codex"), CodexDriver)
+    assert result.session_id == "sess-e2e"
+    assert result.model is None
+    assert any(isinstance(e, TextDelta) and e.text == "ok" for e in seen)
+    assert isinstance(seen[-1], RunCompleted)

@@ -1,340 +1,316 @@
-"""Agy CLI driver: stream-json on stdout, a temporary log file for the session ID, and the prompt in argv."""
+"""Agy CLI driver: stream-json on stdout, a temp log file for session ID, and prompt in argv."""
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import os
 import re
 import subprocess
-import tempfile
+from collections import deque
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, Literal
 
-from .._classify import Facts, keyword_code
-from .._platform import prepare_command
-from .._process import ProcessOutcome, run_process
-from ..events import SessionIdentified, TextDelta, ToolCompleted, UsageUpdated
-from ..registry import EventHandler, SpawnHandler
-from ..types import Diagnostic, Request, Result
-from ._common import (
-    CliDriver,
-    Diagnostics,
-    EventBuffer,
-    as_int,
-    build_result,
-    deadline_for,
-    parse_json_object,
-    process_facts,
-    read_and_unlink,
-    request_failure,
-    tool_started,
+from .._args import reject_conflicts, reject_transport_flags, reject_unsupported
+from .._classify import keyword_code
+from ..driver import CliDriver, Facts, Launch, Parser, RequestError
+from ..events import (
+    Event,
+    JsonValue,
+    MessageCompleted,
+    MessageStarted,
+    TextDelta,
+    ToolCompleted,
+    ToolStarted,
+    UsageUpdated,
 )
-from ._usage import TokenCounters
+from ..types import Diagnostic, ErrorCode, Request, Usage
+from ._common import as_int
 
-MAX_DIAGNOSTICS = 50
 PROMPT_LIMIT_BYTES = 100 * 1024
 WINDOWS_COMMAND_LINE_LIMIT_CHARS = 32767
+_MAX_ERROR_LINES = 50
 _WINDOWS = os.name == "nt"
 _UUID_PATTERN = r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
 _CONVERSATION_ID_RE = re.compile(rf"(?:Created|Streaming) conversation {_UUID_PATTERN}")
-_SUCCESS_STATUS = "SUCCESS"
+_COMMAND_TOOLS = frozenset({"run_command"})
+_ERROR_STATUS = "ERROR"
+
+_OWNED_FLAGS = (
+    "--output-format",
+    "--input-format",
+    "--log-file",
+    "--conversation",
+    "--new-project",
+    "--print",
+    "-p",
+    "--prompt",
+    "--continue",
+    "-c",
+)
+_SUPPORTED_PORTABLE = ("model", "reasoning")
+_PORTABLE_CONFLICTS = {
+    "model": ("--model",),
+    "reasoning": ("--effort",),
+}
 
 
-def _event_model(event: dict[str, Any]) -> str | None:
-    """Return the model named by one event: its top-level ``model``, else its ``result.model``."""
-    model = event.get("model")
-    if isinstance(model, str) and model:
-        return model
-    result = event.get("result")
-    if isinstance(result, dict):
-        model = result.get("model")
-        if isinstance(model, str) and model:
-            return model
-    return None
-
-
-def _prompt_error(prompt: str) -> Diagnostic | None:
-    """Reject a prompt that cannot be passed in argv: NUL bytes, invalid UTF-8, or more than the size limit."""
+def _validate_prompt(prompt: str) -> None:
+    """Reject a prompt that cannot be passed in argv."""
     if "\x00" in prompt:
-        return Diagnostic(code="invalid_prompt", message="prompt cannot contain NUL bytes")
+        raise RequestError(ErrorCode.INVALID_PROMPT, "prompt cannot contain NUL bytes")
     try:
         size = len(prompt.encode("utf-8"))
     except UnicodeEncodeError as exc:
-        return Diagnostic(code="invalid_prompt", message=f"prompt is not valid UTF-8: {exc}")
+        raise RequestError(ErrorCode.INVALID_PROMPT, f"prompt is not valid UTF-8: {exc}") from exc
     if size > PROMPT_LIMIT_BYTES:
-        return Diagnostic(
-            code="invalid_prompt",
-            message=(
-                f"agy prompt is {size} bytes, "
-                f"above the 100 KiB ({PROMPT_LIMIT_BYTES} bytes) limit for the prompt argument"
-            ),
+        raise RequestError(
+            ErrorCode.INVALID_PROMPT,
+            f"agy prompt is {size} bytes, above the 100 KiB ({PROMPT_LIMIT_BYTES} bytes) limit for the prompt argument",
         )
+
+
+def _validate_command_line(argv: list[str]) -> None:
+    """On Windows, reject an argv whose command line exceeds the CreateProcess limit."""
+    if not _WINDOWS:
+        return
+    chars = len(subprocess.list2cmdline(argv))
+    if chars > WINDOWS_COMMAND_LINE_LIMIT_CHARS:
+        raise RequestError(
+            ErrorCode.INVALID_PROMPT,
+            f"agy command line is {chars} characters, above the Windows limit of {WINDOWS_COMMAND_LINE_LIMIT_CHARS}",
+        )
+
+
+def _step_key(update: dict[str, Any]) -> int | None:
+    step_index = update.get("step_index")
+    if isinstance(step_index, int) and not isinstance(step_index, bool):
+        return step_index
     return None
 
 
-def _command_line_error(argv: list[str]) -> Diagnostic | None:
-    """On Windows, reject an argv whose command line exceeds the CreateProcess limit."""
-    if not _WINDOWS:
-        return None
-    chars = len(subprocess.list2cmdline(prepare_command(list(argv))))
-    if chars <= WINDOWS_COMMAND_LINE_LIMIT_CHARS:
-        return None
-    return Diagnostic(
-        code="invalid_prompt",
-        message=(
-            f"agy command line is {chars} characters, "
-            f"above the Windows limit of {WINDOWS_COMMAND_LINE_LIMIT_CHARS} characters"
-        ),
-    )
+class AgyParser:
+    """Parser for ``agy --output-format stream-json`` output."""
 
+    def __init__(self, *, requested_session: str | None = None) -> None:
+        self._requested_session = requested_session or ""
+        self._model: str | None = None
+        self._saw_json = False
+        self._plain_started = False
+        self._active_message_step: int | None = None
+        self._active_tools: dict[int, str] = {}
+        self._error_lines: deque[str] = deque(maxlen=_MAX_ERROR_LINES)
+        self._status = ""
+        self._result_error = ""
+        self._final_text: str | None = None
+        self._stop_reason: str | None = None
+        self._seen_usage = False
+        self._input_total = 0
+        self._output_total = 0
+        self._cache_read_total = 0
+        self._usage = Usage()
 
-class AgyRun:
-    """Parse one Agy run line by line with bounded state. Raw lines are never retained after the first JSON event.
-
-    Plain-text lines are the reply only for a run that emits no JSON events, so they are kept until the first event.
-    """
-
-    def __init__(self, sink: EventHandler, *, requested_session: str | None) -> None:
-        self.events = EventBuffer(sink)
-        self.diagnostics = Diagnostics(MAX_DIAGNOSTICS)
-        self.counters = TokenCounters()
-        self.requested_session = requested_session or ""
-        self.stream_session_id = ""
-        self.conversation_id = ""
-        self.tool_counter = 0
-        self.active_tool_id = ""
-        self.step_counter = 0
-        self.deltas: list[str] = []
-        self.final_response = ""
-        self.status = ""
-        self.model: str | None = None
-        self.saw_event = False
-        self.plain_lines: list[str] = []
-
-    async def feed(self, line: str) -> None:
-        stripped = line.strip()
-        match = _CONVERSATION_ID_RE.search(stripped)
-        if match and not self.stream_session_id:
-            self.stream_session_id = match.group(1)
-            self._identify(self.stream_session_id)
-        event = parse_json_object(stripped)
-        if event is None:
-            if stripped:
-                code = keyword_code(stripped)
-                self.diagnostics.add(stripped, marks=(code,) if code else ())
-                if match is None and not self.saw_event:
-                    self.plain_lines.append(stripped)
-        else:
-            self.saw_event = True
-            self.plain_lines.clear()
-            model = _event_model(event)
-            if model:
-                self.model = model
-            self._dispatch(event)
-        await self.events.flush()
-
-    def _identify(self, value: Any) -> None:
-        if isinstance(value, str) and value and value != self.conversation_id:
-            self.conversation_id = value
-            self.events.emit(SessionIdentified(session_id=value))
-
-    def _usage_updated(self) -> None:
-        self.events.emit(UsageUpdated(usage=self.counters.usage()))
-
-    def _dispatch(self, event: dict[str, Any]) -> None:
-        self._identify(event.get("conversation_id"))
-        kind = event.get("event", "")
-        if kind == "step_update":
-            self._step_update(event.get("step_update"))
-        elif kind == "result":
-            self._result(event.get("result"))
-
-    def _step_update(self, update: Any) -> None:
-        if not isinstance(update, dict):
-            return
-        self._identify(update.get("conversation_id"))
-        step_type = update.get("step_type", "")
-        if step_type == "agent_response":
-            self._append_delta(update.get("text_delta"))
-        elif step_type == "tool":
-            self._tool_update(update)
-
-        usage = update.get("usage")
-        if update.get("state", "") == "DONE" and isinstance(usage, dict):
-            self._step_usage(update, usage)
-
-    def _append_delta(self, value: Any) -> None:
-        if isinstance(value, str) and value:
-            self.deltas.append(value)
-            self.events.emit(TextDelta(text=value, entity_id="msg-1"))
-
-    def _tool_update(self, update: dict[str, Any]) -> None:
-        tool_info = update.get("tool_info")
-        if not isinstance(tool_info, dict):
-            tool_info = {}
-        state = update.get("state", "")
-        if state == "ACTIVE":
-            self.tool_counter += 1
-            self.active_tool_id = f"tool-{self.tool_counter}"
-            tool_name = str(update.get("tool_name", "") or tool_info.get("name", ""))
-            self.events.emit(
-                tool_started(self.active_tool_id, "agy", tool_name, tool_input=tool_info.get("parameters"))
-            )
-        elif state == "DONE":
-            self.events.emit(
-                ToolCompleted(status="completed", entity_id=self.active_tool_id or f"tool-{self.tool_counter or 1}")
-            )
-            self.active_tool_id = ""
-
-    def _step_usage(self, update: dict[str, Any], usage: dict[str, Any]) -> None:
-        raw_in = as_int(usage.get("input_tokens"))
-        raw_out = as_int(usage.get("output_tokens"))
-        cache_read = as_int(usage.get("cache_read_tokens"))
-        cache_write = as_int(usage.get("cache_write_tokens"))
-        if not any(v is not None for v in (raw_in, raw_out, cache_read, cache_write)):
-            return
-        self.step_counter += 1
-        step_index = update.get("step_index")
-        step_id = f"step_{step_index}" if step_index is not None else f"step_{self.step_counter}"
-        self.counters.record_response(
-            step_id, input=raw_in, output=raw_out, cache_read=cache_read, cache_write=cache_write
+    def _build_usage(self) -> Usage:
+        return Usage(
+            input=self._input_total if self._seen_usage else None,
+            output=self._output_total if self._seen_usage else None,
+            cache_read=self._cache_read_total if self._seen_usage else None,
         )
-        window = as_int(
-            usage.get("model_context_window")
-            or usage.get("context_window_size")
-            or update.get("model_context_window")
-            or update.get("context_window_size")
-        )
-        if raw_in is not None and raw_out is not None:
-            used = raw_in + raw_out - (as_int(usage.get("thinking_tokens")) or 0)
-            if used >= 0:
-                self.counters.record_context(used=used)
-        if window is not None:
-            self.counters.record_context(window=window)
-        self._usage_updated()
 
-    def _result(self, result: Any) -> None:
-        if not isinstance(result, dict):
-            return
-        self._identify(result.get("conversation_id"))
-        response = result.get("response")
-        if isinstance(response, str) and response:
-            self.final_response = response
-        status = result.get("status")
-        if isinstance(status, str):
-            self.status = status
-        usage = result.get("usage")
+    def _handle_usage(self, usage: Any, *, cumulative: bool, events: list[Event]) -> None:
         if not isinstance(usage, dict):
             return
         raw_in = as_int(usage.get("input_tokens"))
         raw_out = as_int(usage.get("output_tokens"))
         cache_read = as_int(usage.get("cache_read_tokens"))
-        cache_write = as_int(usage.get("cache_write_tokens"))
-        totals = any(v is not None for v in (raw_in, raw_out, cache_read, cache_write))
-        if totals:
-            self.counters.record_totals(input=raw_in, output=raw_out, cache_read=cache_read, cache_write=cache_write)
-        window = as_int(usage.get("model_context_window") or usage.get("context_window_size"))
-        if window is not None:
-            self.counters.record_context(window=window)
-        if totals or window is not None:
-            self._usage_updated()
+        if any(v is not None for v in (raw_in, raw_out, cache_read)):
+            self._seen_usage = True
+            # Evidenced in agy/1.5.9/shell.stdout.jsonl: total_tokens == input_tokens + output_tokens.
+            if cumulative:
+                self._input_total = raw_in or 0
+                self._output_total = raw_out or 0
+                self._cache_read_total = cache_read or 0
+            else:
+                self._input_total += raw_in or 0
+                self._output_total += raw_out or 0
+                self._cache_read_total += cache_read or 0
+            self._usage = self._build_usage()
+            events.append(UsageUpdated(usage=self._usage))
 
-    def finish(self, process: ProcessOutcome, cancel: asyncio.Event, log_text: str) -> Result:
-        """Map the parsed stream, the log file text, and the transport outcome to a result."""
-        match = _CONVERSATION_ID_RE.search(log_text)
-        session_id = (
-            match.group(1) if match else (self.stream_session_id or self.conversation_id or self.requested_session)
+    def _handle_agent_response(self, update: dict[str, Any], events: list[Event]) -> None:
+        step_key = _step_key(update)
+        delta = update.get("text_delta")
+        if isinstance(delta, str) and delta:
+            if self._active_message_step is None or self._active_message_step != step_key:
+                if self._active_message_step is not None:
+                    events.append(MessageCompleted())
+                events.append(MessageStarted())
+                self._active_message_step = step_key if step_key is not None else -1
+            events.append(TextDelta(text=delta))
+        if update.get("state") == "DONE" and self._active_message_step is not None:
+            if step_key is None or self._active_message_step == step_key:
+                events.append(MessageCompleted())
+                self._active_message_step = None
+
+    def _handle_tool(self, update: dict[str, Any], events: list[Event]) -> None:
+        tool_info_raw = update.get("tool_info")
+        tool_info: dict[str, Any] = tool_info_raw if isinstance(tool_info_raw, dict) else {}
+        step_key = _step_key(update)
+        state = update.get("state")
+        if state == "ACTIVE":
+            if step_key is not None and step_key in self._active_tools:
+                return
+            tool_name = str(update.get("tool_name") or tool_info.get("name") or "")
+            if step_key is not None:
+                self._active_tools[step_key] = tool_name
+            activity: Literal["command", "tool_call"] = "command" if tool_name in _COMMAND_TOOLS else "tool_call"
+            events.append(
+                ToolStarted(
+                    tool=tool_name,
+                    activity=activity,
+                    input=tool_info.get("parameters"),
+                )
+            )
+        elif state == "DONE" or (step_key is not None and step_key in self._active_tools):
+            # Any other terminal state closes the started step; its meaning is unproven, so it maps to unknown.
+            started_name = self._active_tools.pop(step_key, None) if step_key is not None else None
+            tool_name = (
+                started_name
+                if started_name is not None
+                else str(update.get("tool_name") or tool_info.get("name") or "")
+            )
+            has_unevidenced_status = any(
+                key in payload for payload in (update, tool_info) for key in ("error", "status")
+            )
+            status: Literal["completed", "error", "unknown"] = (
+                "unknown" if has_unevidenced_status or state != "DONE" else "completed"
+            )
+            output: JsonValue | None = tool_info.get("output")
+            events.append(ToolCompleted(tool=tool_name, status=status, output=output))
+
+    def feed_json(self, obj: dict[str, Any]) -> Iterable[Event]:
+        events: list[Event] = []
+        if not self._saw_json and self._plain_started:
+            events.append(MessageCompleted())
+            self._plain_started = False
+        self._saw_json = True
+
+        kind = obj.get("event")
+        if kind == "init":
+            init = obj.get("init")
+            if isinstance(init, dict):
+                model = init.get("model")
+                if isinstance(model, str) and model:
+                    self._model = model
+        elif kind == "step_update":
+            update = obj.get("step_update")
+            if isinstance(update, dict):
+                step_type = update.get("step_type")
+                if step_type == "agent_response":
+                    self._handle_agent_response(update, events)
+                elif step_type == "tool":
+                    self._handle_tool(update, events)
+                if update.get("state") == "DONE":
+                    self._handle_usage(update.get("usage"), cumulative=False, events=events)
+        elif kind == "result":
+            result = obj.get("result")
+            if isinstance(result, dict):
+                response = result.get("response")
+                if isinstance(response, str) and response:
+                    self._final_text = response
+                status = result.get("status")
+                if isinstance(status, str):
+                    self._status = status
+                error = result.get("error")
+                if isinstance(error, str) and error:
+                    self._result_error = error
+                finished_reason = result.get("finished_reason")
+                if isinstance(finished_reason, str) and finished_reason:
+                    self._stop_reason = finished_reason
+                self._handle_usage(result.get("usage"), cumulative=True, events=events)
+        return events
+
+    def feed_text(self, line: str, *, stream: Literal["stdout", "stderr"]) -> Iterable[Event]:
+        events: list[Event] = []
+        if stream == "stderr":
+            stripped = line.strip()
+            if stripped:
+                self._error_lines.append(stripped)
+            return events
+
+        if not self._saw_json:
+            if not self._plain_started:
+                events.append(MessageStarted())
+                self._plain_started = True
+                events.append(TextDelta(text=line))
+            else:
+                events.append(TextDelta(text=f"\n{line}"))
+        # Mixed structured and plain stdout is unsupported; structured output takes precedence.
+        return events
+
+    def finish(self, read_back: Mapping[Path, bytes]) -> Facts:
+        session_id: str | None = None
+        for data in read_back.values():
+            log_text = data.decode("utf-8", errors="replace")
+            match = _CONVERSATION_ID_RE.search(log_text)
+            if match:
+                session_id = match.group(1)
+                break
+        if not session_id and self._requested_session:
+            session_id = self._requested_session
+
+        error_text = "\n".join(part for part in (self._result_error, *self._error_lines) if part)
+        error: Diagnostic | None = None
+        # Only SUCCESS and ERROR are evidenced in agy/1.5.9/; leave other statuses uninterpreted.
+        if self._status == _ERROR_STATUS:
+            code = keyword_code(error_text) or ErrorCode.EXECUTION_ERROR
+            error = Diagnostic(code=code, message=self._result_error or f"agy reported status {self._status}")
+
+        return Facts(
+            final_text=self._final_text,
+            session_id=session_id,
+            model=self._model,
+            usage=self._usage,
+            num_turns=None,
+            stop_reason=self._stop_reason,
+            error=error,
+            error_text=error_text,
         )
-        if not self.saw_event:
-            text = "\n".join(self.plain_lines).strip()
-        else:
-            text = (self.final_response or "".join(self.deltas)).strip()
-
-        facts: Facts = process_facts(process, cancel)
-        facts.text = text
-        facts.session_id = session_id or None
-        if self.status and self.status != _SUCCESS_STATUS:
-            facts.cli_error = Diagnostic(code="execution_error", message=f"agy reported status {self.status}")
-        # Diagnostics classify the run only when there is no agent output, or when the process exited nonzero.
-        if not text or facts.returncode:
-            facts.diagnostics = self.diagnostics.text()
-        return build_result(facts, model=self.model, usage=self.counters.usage())
 
 
 class AgyDriver(CliDriver):
-    """Runs ``agy --print`` with the prompt in argv, in ``Request.cwd``. The driver never adds a permission flag."""
+    """Runs ``agy --print`` with the prompt in argv. Never adds a permission flag."""
 
-    name = "agy"
-    executable = "agy"
-    owned_flags = (
-        "--output-format",
-        "--log-file",
-        "--conversation",
-        "--new-project",
-        "--print",
-        "-p",
-        "--prompt",
-        "--continue",
-        "-c",
-    )
-    portable_flags = {"model": ("--model",)}
-    help_markers = ("--output-format", "stream-json", "--log-file")
+    name: ClassVar[str] = "agy"
+    executable: ClassVar[str] = "agy"
 
-    def validate(self, req: Request) -> Diagnostic | None:
-        return _prompt_error(req.prompt)
+    def launch(self, req: Request, exe: Path, tmp: Path) -> Launch:
+        _validate_prompt(req.prompt)
+        for error in (
+            reject_unsupported(req, _SUPPORTED_PORTABLE),
+            reject_transport_flags(req.args, _OWNED_FLAGS),
+            reject_conflicts(req, _PORTABLE_CONFLICTS),
+        ):
+            if error is not None:
+                raise RequestError(error.code, error.message)
 
-    def _argv(self, executable: Path, req: Request, log_path: Path) -> list[str]:
-        argv = [os.fspath(executable), "--output-format", "stream-json", "--log-file", os.fspath(log_path)]
+        log_path = tmp / "agy.log"
+        argv = [os.fspath(exe), "--output-format", "stream-json", "--log-file", os.fspath(log_path)]
         if req.session_id:
             argv.extend(["--conversation", req.session_id])
         else:
             argv.append("--new-project")
-        argv.extend(self.portable_argv(req))
+        if req.model is not None:
+            argv.extend(["--model", req.model])
+        if req.reasoning is not None:
+            argv.extend(["--effort", req.reasoning])
         argv.extend(req.args)
         # The prompt comes last so no caller arg can take it as a flag value.
         argv.extend(["--print", req.prompt])
-        return argv
+        _validate_command_line(argv)
+        return Launch(argv=tuple(argv), read_back=(log_path,))
 
-    async def run(
-        self,
-        req: Request,
-        *,
-        on_event: EventHandler,
-        cancel: asyncio.Event,
-        on_spawn: SpawnHandler | None,
-    ) -> Result:
-        prepared = self.preflight(req, cancel)
-        if isinstance(prepared, Result):
-            return prepared
-        cwd, executable = prepared
-        fd, name = tempfile.mkstemp(prefix="coding-agent-cli-", suffix=".log")
-        os.close(fd)
-        log_path = Path(name)
-        self.log.info("run start resume=%s prompt_len=%d", bool(req.session_id), len(req.prompt))
-        run = AgyRun(on_event, requested_session=req.session_id)
-        try:
-            argv = self._argv(executable, req, log_path)
-            error = _command_line_error(argv)
-            if error is not None:
-                return request_failure(req, error, cancel)
-            process = await run_process(
-                argv,
-                None,
-                dict(req.env),
-                os.fspath(cwd),
-                deadline_for(req),
-                cancel,
-                run.feed,
-                on_spawn=on_spawn,
-            )
-            log_text = read_and_unlink(log_path, errors="ignore")
-        finally:
-            with contextlib.suppress(OSError):
-                log_path.unlink()
-        result = run.finish(process, cancel, log_text)
-        self.log.info("run done outcome=%s", result.outcome)
-        return result
+    def parser(self, req: Request) -> Parser:
+        return AgyParser(requested_session=req.session_id)
 
 
-__all__ = ["MAX_DIAGNOSTICS", "PROMPT_LIMIT_BYTES", "AgyDriver", "AgyRun"]
+__all__ = ["PROMPT_LIMIT_BYTES", "AgyDriver", "AgyParser"]

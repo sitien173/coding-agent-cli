@@ -49,7 +49,7 @@ testpaths = ["tests"]
 markers = ["live: runs a real coding-agent CLI; excluded by default"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
 pythonVersion = "3.12"
 
 [tool.ruff]

@@ -1,0 +1,5 @@
+No API key found for openai-codex.
+
+Use /login to log into a provider via OAuth or API key. See:
+  <scrubbed:config-path>
+  <scrubbed:config-path>

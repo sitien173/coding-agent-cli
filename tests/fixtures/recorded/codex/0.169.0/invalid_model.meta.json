@@ -1,0 +1,19 @@
+{
+  "cli": "codex",
+  "version": "0.169.0",
+  "version_output": "codex-cli 0.169.0",
+  "scenario": "invalid_model",
+  "argv": [
+    "codex",
+    "exec",
+    "--json",
+    "--model",
+    "nonexistent-model-xyz-9999",
+    "-"
+  ],
+  "returncode": 1,
+  "timed_out": false,
+  "cancelled": false,
+  "outcome": "request_fatal",
+  "code": "invalid_model"
+}

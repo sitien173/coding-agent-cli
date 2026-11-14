@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from .types import Diagnostic, Request
+from .types import Diagnostic, ErrorCode, Request
 
 PORTABLE_FIELDS = ("model", "reasoning", "system_prompt")
 
@@ -22,11 +22,21 @@ def _has_flag(args: Sequence[str], flags: Iterable[str]) -> str | None:
 def validate_args(args: Sequence[Any]) -> Diagnostic | None:
     """Reject non-string args, NUL bytes, and the reserved bare ``--`` token."""
     if not all(isinstance(value, str) for value in args):
-        return Diagnostic(code="invalid_args", message="args must contain only strings")
+        return Diagnostic(code=ErrorCode.INVALID_ARGS, message="args must contain only strings")
     if any("\x00" in value for value in args):
-        return Diagnostic(code="invalid_args", message="args cannot contain NUL bytes")
+        return Diagnostic(code=ErrorCode.INVALID_ARGS, message="args cannot contain NUL bytes")
     if "--" in args:
-        return Diagnostic(code="invalid_args", message="args cannot contain the reserved '--' token")
+        return Diagnostic(code=ErrorCode.INVALID_ARGS, message="args cannot contain the reserved '--' token")
+    return None
+
+
+def validate_request(req: Request) -> Diagnostic | None:
+    """Validate the request fields that are common to every CLI driver."""
+    error = validate_args(req.args)
+    if error is not None:
+        return error
+    if not req.cwd.is_dir():
+        return Diagnostic(code=ErrorCode.BAD_CWD, message="cwd is not an existing directory")
     return None
 
 
@@ -36,7 +46,8 @@ def reject_transport_flags(args: Sequence[str], owned: Iterable[str]) -> Diagnos
     if token is None:
         return None
     return Diagnostic(
-        code="invalid_args", message=f"args cannot override the driver-owned flag {token.split('=', 1)[0]!r}"
+        code=ErrorCode.INVALID_ARGS,
+        message=f"args cannot override the driver-owned flag {token.split('=', 1)[0]!r}",
     )
 
 
@@ -45,7 +56,9 @@ def reject_unsupported(req: Request, supported: Iterable[str]) -> Diagnostic | N
     allowed = set(supported)
     for name in PORTABLE_FIELDS:
         if getattr(req, name) is not None and name not in allowed:
-            return Diagnostic(code="unsupported_option", message=f"driver {req.driver!r} does not support {name}")
+            return Diagnostic(
+                code=ErrorCode.UNSUPPORTED_OPTION, message=f"driver {req.driver!r} does not support {name}"
+            )
     return None
 
 
@@ -57,10 +70,17 @@ def reject_conflicts(req: Request, flags: Mapping[str, Iterable[str]]) -> Diagno
         token = _has_flag(req.args, field_flags)
         if token is not None:
             return Diagnostic(
-                code="invalid_args",
+                code=ErrorCode.INVALID_ARGS,
                 message=f"args flag {token.split('=', 1)[0]!r} conflicts with the {name} option",
             )
     return None
 
 
-__all__ = ["PORTABLE_FIELDS", "reject_conflicts", "reject_transport_flags", "reject_unsupported", "validate_args"]
+__all__ = [
+    "PORTABLE_FIELDS",
+    "reject_conflicts",
+    "reject_transport_flags",
+    "reject_unsupported",
+    "validate_args",
+    "validate_request",
+]

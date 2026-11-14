@@ -1,0 +1,9 @@
+{"type": "thread.started", "thread_id": "00000000-0000-4000-8000-000000000002"}
+{"type": "item.completed", "item": {"id": "id-0001", "type": "error", "message": "`[features].multi_agent` is deprecated. It still controls the V1 fallback. `[agents].enabled = false` disables subagent tools even when the model selects a subagent version, unless `[features].multi_agent_v2` is enabled."}}
+{"type": "item.completed", "item": {"id": "id-0002", "type": "error", "message": "`[features].multi_agent` is deprecated. It still controls the V1 fallback. `[agents].enabled = false` disables subagent tools even when the model selects a subagent version, unless `[features].multi_agent_v2` is enabled."}}
+{"type": "turn.started"}
+{"type": "item.completed", "item": {"id": "id-0003", "type": "agent_message", "text": "I’ll run `ls` in the current workspace and report the names it returns."}}
+{"type": "item.started", "item": {"id": "id-0004", "type": "command_execution", "command": "/usr/bin/zsh -lc ls", "aggregated_output": "", "exit_code": null, "status": "in_progress"}}
+{"type": "item.completed", "item": {"id": "id-0004", "type": "command_execution", "command": "/usr/bin/zsh -lc ls", "aggregated_output": "calc.py\nhello.txt\n", "exit_code": 0, "status": "completed"}}
+{"type": "item.completed", "item": {"id": "id-0005", "type": "agent_message", "text": "`ls` returned:\n\n- `calc.py`\n- `hello.txt`"}}
+{"type": "turn.completed", "usage": {"input_tokens": 31292, "cached_input_tokens": 23168, "cache_write_input_tokens": 0, "output_tokens": 88, "reasoning_output_tokens": 0}}

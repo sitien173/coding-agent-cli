@@ -5,11 +5,17 @@ from pathlib import Path
 import pytest
 
 from coding_agent_cli import Request
-from coding_agent_cli._args import reject_conflicts, reject_transport_flags, reject_unsupported, validate_args
+from coding_agent_cli._args import (
+    reject_conflicts,
+    reject_transport_flags,
+    reject_unsupported,
+    validate_args,
+    validate_request,
+)
 
 
 def _req(**kwargs) -> Request:
-    return Request(driver="d", prompt="p", cwd=Path("."), **kwargs)
+    return Request(driver="d", prompt="p", cwd=kwargs.pop("cwd", Path(".")), **kwargs)
 
 
 @pytest.mark.parametrize("args", [(1,), ("a\x00b",), ("--",)])
@@ -20,6 +26,11 @@ def test_invalid_args(args) -> None:
 
 def test_valid_args() -> None:
     assert validate_args(("--x", "y", "-")) is None
+
+
+def test_validate_request_rejects_missing_cwd() -> None:
+    error = validate_request(_req(cwd=Path("/path/that/does/not/exist")))
+    assert error is not None and error.code == "bad_cwd"
 
 
 def test_transport_flags_rejected_bare_and_with_value() -> None:

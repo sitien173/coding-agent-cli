@@ -1,0 +1,27 @@
+{
+  "cli": "pi",
+  "version": "1.5.2",
+  "version_output": "1.5.2",
+  "scenario": "auth_failure",
+  "argv": [
+    "pi",
+    "-p",
+    "--mode",
+    "json",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-themes",
+    "--no-context-files",
+    "--no-mcp",
+    "--session-dir",
+    "<REDACTED_PATH>/pi-sessions",
+    "--model",
+    "openai-codex/gpt-5.6-luna"
+  ],
+  "returncode": 1,
+  "timed_out": false,
+  "cancelled": false,
+  "outcome": "agent_fatal",
+  "code": "auth"
+}

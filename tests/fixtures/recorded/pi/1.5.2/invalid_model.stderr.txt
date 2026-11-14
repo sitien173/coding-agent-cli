@@ -1,0 +1,1 @@
+Error: Model "nonexistent-model-xyz-9999" not found. Use --list-models to see available models.

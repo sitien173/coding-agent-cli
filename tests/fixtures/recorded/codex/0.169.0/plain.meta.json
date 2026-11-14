@@ -1,0 +1,17 @@
+{
+  "cli": "codex",
+  "version": "0.169.0",
+  "version_output": "codex-cli 0.169.0",
+  "scenario": "plain",
+  "argv": [
+    "codex",
+    "exec",
+    "--json",
+    "-"
+  ],
+  "returncode": 0,
+  "timed_out": false,
+  "cancelled": false,
+  "outcome": "success",
+  "code": null
+}

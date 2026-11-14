@@ -1,0 +1,19 @@
+{
+  "cli": "codex",
+  "version": "0.169.0",
+  "version_output": "codex-cli 0.169.0",
+  "scenario": "cancel",
+  "argv": [
+    "codex",
+    "exec",
+    "--json",
+    "--sandbox",
+    "workspace-write",
+    "-"
+  ],
+  "returncode": -15,
+  "timed_out": false,
+  "cancelled": true,
+  "outcome": "cancelled",
+  "code": "cancelled"
+}

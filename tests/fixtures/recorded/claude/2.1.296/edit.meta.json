@@ -1,0 +1,31 @@
+{
+  "cli": "claude",
+  "version": "2.1.296",
+  "version_output": "2.1.296 (Claude Code)",
+  "scenario": "edit",
+  "argv": [
+    "claude",
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--setting-sources",
+    "",
+    "--strict-mcp-config",
+    "--disable-slash-commands",
+    "--model",
+    "haiku",
+    "--max-budget-usd",
+    "0.05",
+    "--permission-mode",
+    "acceptEdits",
+    "--allowedTools",
+    "Bash,Edit,Write,Read"
+  ],
+  "returncode": 0,
+  "timed_out": false,
+  "cancelled": false,
+  "outcome": "success",
+  "code": null
+}

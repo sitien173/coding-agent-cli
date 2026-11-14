@@ -1,0 +1,17 @@
+{
+  "cli": "codex",
+  "version": "0.169.0",
+  "version_output": "codex-cli 0.169.0",
+  "scenario": "auth_failure",
+  "argv": [
+    "codex",
+    "exec",
+    "--json",
+    "-"
+  ],
+  "returncode": 1,
+  "timed_out": false,
+  "cancelled": false,
+  "outcome": "agent_fatal",
+  "code": "auth"
+}

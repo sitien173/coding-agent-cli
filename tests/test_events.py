@@ -4,6 +4,7 @@ import dataclasses
 
 import pytest
 
+import coding_agent_cli.events as events_mod
 from coding_agent_cli import (
     MessageCompleted,
     MessageStarted,
@@ -18,30 +19,48 @@ from coding_agent_cli import (
     UsageUpdated,
 )
 
-EVENTS = [
-    (SessionIdentified(session_id="s"), "session.identified"),
-    (MessageStarted(), "assistant.message.started"),
-    (TextDelta(text="t"), "assistant.text.delta"),
-    (MessageCompleted(), "assistant.message.completed"),
-    (ToolStarted(tool="Bash", activity="command", input={"c": 1}), "tool.started"),
-    (ToolCompleted(status="completed"), "tool.completed"),
-    (UsageUpdated(usage=Usage(input=1)), "usage.updated"),
-    (RunCompleted(result=Result(outcome=Outcome.SUCCESS)), "run.completed"),
-]
+
+def _events() -> list[tuple[object, str]]:
+    reasoning_cls = getattr(events_mod, "ReasoningDelta", None)
+    file_changed_cls = getattr(events_mod, "FileChanged", None)
+    notice_cls = getattr(events_mod, "Notice", None)
+    raw_cls = getattr(events_mod, "RawEvent", None)
+    assert reasoning_cls is not None
+    assert file_changed_cls is not None
+    assert notice_cls is not None
+    assert raw_cls is not None
+    return [
+        (SessionIdentified(session_id="s"), "session.identified"),
+        (MessageStarted(), "assistant.message.started"),
+        (TextDelta(text="t"), "assistant.text.delta"),
+        (reasoning_cls(text="r"), "assistant.reasoning.delta"),
+        (MessageCompleted(), "assistant.message.completed"),
+        (ToolStarted(tool="Bash", activity="command", input={"c": 1}), "tool.started"),
+        (ToolCompleted(tool="Bash", status="completed", output={"ok": True}), "tool.completed"),  # type: ignore[call-arg]
+        (file_changed_cls(path="a.py", change="modified", evidence="reported"), "file.changed"),
+        (notice_cls(code="retry", message="retrying"), "notice"),
+        (UsageUpdated(usage=Usage(input=1)), "usage.updated"),
+        (raw_cls(stream="stdout", data={"type": "x"}), "raw"),
+        (RunCompleted(result=Result(outcome=Outcome.SUCCESS)), "run.completed"),
+    ]
 
 
-@pytest.mark.parametrize(("event", "kind"), EVENTS)
-def test_event_kind_and_defaults(event, kind: str) -> None:
-    assert event.kind == kind
-    assert event.schema_version == 1
-    assert event.sequence == 0
-    assert event.entity_id is None
+def test_schema_version_is_2() -> None:
+    assert events_mod.SCHEMA_VERSION == 2
 
 
-@pytest.mark.parametrize(("event", "kind"), EVENTS)
-def test_events_are_frozen(event, kind: str) -> None:
-    with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
-        event.sequence = 5
+def test_events_have_no_schema_version_field() -> None:
+    for event, kind in _events():
+        assert event.kind == kind  # type: ignore[attr-defined]
+        assert not hasattr(event, "schema_version")
+        assert event.sequence == 0  # type: ignore[attr-defined]
+        assert event.entity_id is None  # type: ignore[attr-defined]
+
+
+def test_events_are_frozen() -> None:
+    for event, _ in _events():
+        with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
+            event.sequence = 5  # type: ignore[attr-defined]
 
 
 def test_kind_is_not_a_field() -> None:

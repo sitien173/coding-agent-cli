@@ -59,7 +59,15 @@ uv run pytest -m live -rP
 
 - Every behavior change comes with a test. Write the failing test first when you can.
 - Tests use the fake CLIs in `tests/fixtures/fake_cli`. Unit tests never call a real coding-agent CLI.
+- Recorded sanitized CLI fixtures live in `tests/fixtures/recorded/`; `tests/replay.py` provides replay helpers. `scripts/record_fixtures.py` records new fixtures and is a developer script, not part of the wheel.
 - A new driver needs argv tests proving it adds no permission flag for any option combination.
+
+### Module map
+
+- `src/coding_agent_cli/driver.py` defines the public `CliDriver` extension API, `Launch`, and `Parser`.
+- `src/coding_agent_cli/_transport.py` supervises subprocesses; `_classify.py` maps run facts to outcomes.
+- `src/coding_agent_cli/_drivers/` contains the built-in CLI drivers and shared helpers.
+- `src/coding_agent_cli/registry.py` registers built-in drivers and manages per-call registries.
 
 ### Adding a driver
 

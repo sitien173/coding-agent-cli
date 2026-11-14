@@ -7,15 +7,13 @@
 
 Run coding-agent CLIs from Python, stream typed events, and get a classified result.
 
-Built-in drivers: `claude`, `codex`, `pi`, and `agy`. Python 3.12 or later on Linux, macOS, and Windows. No runtime dependencies.
+Built-in drivers: `claude`, `codex`, `pi`, and `agy`. Python 3.12 or later on Linux, macOS, and Windows. No runtime dependencies. The CLIs themselves are not bundled; install and authenticate each CLI you use.
 
 ## Install
 
 ```bash
 pip install coding-agent-cli
 ```
-
-The CLIs themselves are not bundled. Install and log in to each one you use.
 
 ## Quick start
 
@@ -34,145 +32,220 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-### Streaming events
+## API
 
-Use `stream` inside `async with`. Leaving the block, by `break` or by an exception, cancels the run and kills the process tree.
+The public entry points have these signatures:
 
 ```python
-from coding_agent_cli import RunCompleted, TextDelta, stream
+async def run(
+    req: Request,
+    *,
+    on_event: Callable[[Event], Awaitable[None] | None] | None = None,
+    cancel: asyncio.Event | None = None,
+    on_spawn: Callable[[int], Awaitable[None] | None] | None = None,
+    registry: DriverRegistry | None = None,
+) -> Result: ...
+
+
+def stream(
+    req: Request,
+    *,
+    cancel: asyncio.Event | None = None,
+    on_spawn: Callable[[int], Awaitable[None] | None] | None = None,
+    registry: DriverRegistry | None = None,
+) -> EventStream: ...
+
+
+def run_sync(
+    req: Request,
+    *,
+    on_event: Callable[[Event], None] | None = None,
+    cancel: threading.Event | None = None,
+    registry: DriverRegistry | None = None,
+) -> Result: ...
+
+
+async def check(
+    driver: str,
+    *,
+    executable: str | None = None,
+    env: Mapping[str, str] | None = None,
+    refresh: bool = False,
+    registry: DriverRegistry | None = None,
+) -> Capabilities: ...
+```
+
+`run` and `stream` are asynchronous. `run` accepts a sync or async event callback. `stream` is an async iterator; use it as an async context manager so leaving the block closes the run. Callback exceptions propagate after process cleanup. Unknown driver names raise `KeyError`.
+
+```python
+import asyncio
+from pathlib import Path
+
+from coding_agent_cli import MessageCompleted, Request, RunCompleted, TextDelta, stream
 
 
 async def main() -> None:
-    async with stream(Request(driver="codex", prompt="List the tests", cwd=Path.cwd())) as events:
+    req = Request(driver="codex", prompt="List the tests", cwd=Path.cwd())
+    async with stream(req) as events:
         async for event in events:
             if isinstance(event, TextDelta):
                 print(event.text, end="")
+            elif isinstance(event, MessageCompleted):
+                print()
             elif isinstance(event, RunCompleted):
-                print("\n", event.result.outcome)
+                print(event.result.outcome)
+
+
+asyncio.run(main())
 ```
 
-`run` also accepts `on_event`, an async callback that receives the same events. An exception raised by `on_event` is raised from `run` after the process tree is killed.
-
-### Synchronous use
+`run_sync` is for synchronous applications and raises `RuntimeError` inside an active event loop. Its `threading.Event` cancellation signal can be set from another thread:
 
 ```python
-from coding_agent_cli import run_sync
+import threading
+from pathlib import Path
 
-result = run_sync(Request(driver="pi", prompt="Hello", cwd=Path.cwd()))
+from coding_agent_cli import Request, run_sync
+
+cancel = threading.Event()
+request = Request(driver="pi", prompt="Inspect this project", cwd=Path.cwd())
+# Pass cancel to run_sync and call cancel.set() from another thread to stop the run.
+result = run_sync(request, cancel=cancel)
 ```
 
-`run_sync` raises `RuntimeError` when called inside a running event loop. Await `run` there instead.
+`check(driver, ...)` probes `--version` and `--help` and returns `Capabilities(available, executable, version, structured_streaming)`. Successful probe results are cached by executable path and modification time. `run` does not probe first.
 
-### Checking a CLI
+## Request and Result
 
-```python
-from coding_agent_cli import check
+`Request` is frozen and keyword-only:
 
-caps = await check(Request(driver="agy", prompt="", cwd=Path.cwd()))
-print(caps.available, caps.executable, caps.structured_streaming)
-```
-
-## Request
-
-| Field | Meaning |
-|---|---|
-| `driver` | Driver name, such as `claude`. |
-| `prompt` | The prompt text. |
-| `cwd` | Working directory for the CLI. |
-| `session_id` | Resume this CLI session. |
-| `model` | Portable model option. |
-| `reasoning` | Portable reasoning or effort option. |
-| `system_prompt` | Portable system prompt option. |
-| `args` | Extra CLI arguments, appended by the driver. |
-| `env` | Variables layered over the inherited environment. |
-| `timeout_s` | Wall-clock limit in seconds. |
-| `executable` | Path or name of the CLI to run instead of the default. |
-
-## Portable options
-
-| Option | claude | codex | pi | agy |
-|---|---|---|---|---|
-| `model` | `--model` | `--model` | `--model` | `--model` |
-| `reasoning` | `--effort` | `-c model_reasoning_effort=<value>` | `--thinking` | unsupported |
-| `system_prompt` | `--system-prompt` | unsupported | `--system-prompt` | unsupported |
-
-An unsupported option returns a `request_fatal` result with code `unsupported_option`. Setting a portable option and the same flag in `args` returns `invalid_args`. So does passing a flag the driver owns for its transport, such as `--output-format`.
-
-## Permission and approval flags
-
-The drivers never add a permission, approval, or sandbox-bypass flag. A run that needs tools without prompts must pass the flag through `args`:
-
-| CLI | Flag for unattended runs | Notes |
+| Field | Type | Meaning |
 |---|---|---|
-| claude | `--permission-mode bypassPermissions` | `--dangerously-skip-permissions` is equivalent. |
-| codex | `--dangerously-bypass-approvals-and-sandbox` | Also accepted as `--yolo`. Use only inside an external sandbox. |
-| pi | none | `--approve` trusts project-local files for the run. It is not a tool-permission bypass. |
-| agy | `--dangerously-skip-permissions` | Auto-approves all tool permission requests. |
+| `driver` | `str` | Registered driver name: `claude`, `codex`, `pi`, or `agy`. |
+| `prompt` | `str` | Prompt text. |
+| `cwd` | `Path` | Working directory for the CLI. |
+| `session_id` | `str \| None` | Resume a CLI session when supported. |
+| `model` | `str \| None` | Portable model option when supported. |
+| `reasoning` | `str \| None` | Portable reasoning or effort option when supported. |
+| `system_prompt` | `str \| None` | Portable system prompt when supported. |
+| `args` | `tuple[str, ...]` | Additional CLI arguments passed through unchanged. Each driver decides their position; some drivers append the prompt or session arguments after them. |
+| `env` | `Mapping[str, str]` | Environment overlay on the inherited environment. |
+| `timeout_s` | `float \| None` | Positive finite wall-clock limit, or `None` for no limit. |
+| `idle_timeout_s` | `float \| None` | Positive finite idle limit, reset by process output, or `None` for no limit. |
+| `raw_events` | `bool` | Emit parsed JSON stdout lines as `RawEvent` events. |
+| `executable` | `str \| None` | Executable path or name overriding the driver's default. |
 
-```python
-Request(driver="codex", prompt="Fix the failing test", cwd=repo, args=("--dangerously-bypass-approvals-and-sandbox",))
-```
-
-These flags give the agent full control of the machine it runs on. Use them only in an environment you are prepared to lose.
+`Result` is frozen and keyword-only. Its fields are `outcome: Outcome`, `text: str`, `session_id: str | None`, `model: str | None`, `usage: Usage`, `cost_usd: float | None`, `duration_s: float`, `num_turns: int | None`, `stop_reason: str | None`, `returncode: int | None`, `error: Diagnostic | None`, and `warnings: tuple[Diagnostic, ...]`. `text` is the parser's reported final text when the CLI provides one, otherwise the accumulated text of the last assistant message. It is never the concatenation of every assistant turn. Unknown reported values remain `None`. Codex does not report a model, so its `Result.model` is `None`.
 
 ## Events
 
-Every event has a `kind`, a `sequence` that strictly increases within a run, an optional `entity_id`, and a `schema_version`. Each run ends with exactly one `RunCompleted`, sent after the process tree is gone.
+Each event has an increasing `sequence` and optional CLI-native `entity_id`; the `entity_id` is `None` when the CLI provides no native identifier. Events have no `schema_version` field. The module constant `SCHEMA_VERSION` is `2`. A run that returns a `Result` emits one final `RunCompleted` after cleanup. If cleanup misses its deadline, the result carries a `cleanup_incomplete` warning and termination is not confirmed. If `on_event` or `on_spawn` raises, or the calling task is cancelled, the library cleans up and re-raises without emitting `RunCompleted`.
 
-| Class | `kind` | Fields |
+| Event | `kind` | Additional fields |
 |---|---|---|
 | `SessionIdentified` | `session.identified` | `session_id` |
 | `MessageStarted` | `assistant.message.started` | none |
 | `TextDelta` | `assistant.text.delta` | `text` |
+| `ReasoningDelta` | `assistant.reasoning.delta` | `text` |
 | `MessageCompleted` | `assistant.message.completed` | none |
-| `ToolStarted` | `tool.started` | `tool`, `activity`, `input` |
-| `ToolCompleted` | `tool.completed` | `status` |
+| `ToolStarted` | `tool.started` | `tool`, `activity` (`command` or `tool_call`), `input` |
+| `ToolCompleted` | `tool.completed` | `tool`, `status` (`completed`, `error`, or `unknown`), `output` |
+| `FileChanged` | `file.changed` | `path`, `change` (`added`, `modified`, `deleted`, or `unknown`), `evidence` (`reported` or `inferred`) |
+| `Notice` | `notice` | `code`, `message` |
 | `UsageUpdated` | `usage.updated` | `usage` |
+| `RawEvent` | `raw` | `stream`, `data` |
 | `RunCompleted` | `run.completed` | `result` |
 
-## Outcomes
+## Outcomes and errors
 
 | `Outcome` | Meaning |
 |---|---|
-| `success` | The CLI finished and returned text. |
-| `retryable` | Possibly transient: timeout, service error, nonzero exit, or no output. |
-| `agent_fatal` | The CLI cannot run here: missing CLI, spawn failure, or authentication. |
-| `request_fatal` | The request itself is wrong: bad arguments, unsupported option, invalid model, or context overflow. |
+| `success` | The CLI completed successfully. |
+| `retryable` | The run may succeed later, for example after a timeout, service error, nonzero exit, or missing output. |
+| `limit_reached` | A CLI-reported turn or budget limit stopped the run. |
+| `agent_fatal` | The CLI cannot run here, such as when it is missing or authentication fails. |
+| `request_fatal` | The request is invalid or unsupported. |
 | `cancelled` | The caller cancelled the run. |
 
-`Result.error` holds a `Diagnostic` with a `code` and `message`. `Result.warnings` holds non-fatal diagnostics.
+`ErrorCode` values are `bad_cwd`, `invalid_args`, `unsupported_option`, `invalid_prompt`, `missing_cli`, `spawn_failed`, `auth`, `invalid_model`, `context_overflow`, `service_error`, `max_turns`, `budget`, `cancelled`, `timeout`, `idle_timeout`, `stdin_failed`, `execution_error`, `parser_error`, `no_output`, `no_session_id`, `line_too_long`, and `cleanup_incomplete`. `Result.error` is a `Diagnostic(code, message)` when the run has a primary error; `Result.warnings` contains non-fatal diagnostics.
 
-**Retryable is not replay-safe.** A `retryable` run may already have edited files, run commands, or spent tokens. Check the working tree before you send the same prompt again.
+`retryable` means possibly transient, not safe to replay. The agent may already have edited files, run commands, or spent tokens. Inspect the working tree before sending the same prompt again.
 
-## Cancellation
+## CLI arguments and permissions
 
-Pass an `asyncio.Event` as `cancel`. Setting it ends the run with a `cancelled` result that keeps any partial text. From another thread, set it through the loop:
+Drivers do not add permission, approval, or sandbox-bypass flags. Callers pass any CLI-specific permission flags through `Request.args`:
 
-```python
-cancel = asyncio.Event()
-loop = asyncio.get_running_loop()
-# in the other thread:
-loop.call_soon_threadsafe(cancel.set)
-```
+| CLI | Example flag |
+|---|---|
+| Claude Code | `--permission-mode bypassPermissions` |
+| Codex | `--dangerously-bypass-approvals-and-sandbox` |
+| Pi | No automatic permission flag; `--approve` trusts project-local files and is not a tool-permission bypass. |
+| Agy | `--dangerously-skip-permissions` |
+
+Only use unattended permission flags in an environment you are prepared to lose. Portable `model`, `reasoning`, and `system_prompt` options are supported selectively; unsupported options and conflicts with `args` are classified as request errors.
 
 ## Custom drivers
 
-A driver implements the `Driver` protocol: `async check(req, *, refresh=False) -> Capabilities` and `async run(req, *, on_event, cancel, on_spawn) -> Result`. Register it in a `DriverRegistry` and pass the registry to any entry point:
+Subclass `CliDriver` and implement `launch` and `parser`. `Launch` describes argv, optional stdin, and files to read back after the run. `Parser` converts JSON or text lines into events and final `Facts`:
 
 ```python
-from coding_agent_cli import DriverRegistry
+from collections.abc import Iterable, Mapping
+from pathlib import Path
+from typing import Any, Literal
+
+from coding_agent_cli import CliDriver, DriverRegistry, Event, Facts, Launch, Parser, Request
+
+
+class ExampleParser:
+    def feed_json(self, obj: dict[str, Any]) -> Iterable[Event]:
+        return ()
+
+    def feed_text(self, line: str, *, stream: Literal["stdout", "stderr"]) -> Iterable[Event]:
+        return ()
+
+    def finish(self, read_back: Mapping[Path, bytes]) -> Facts:
+        return Facts()
+
+
+class ExampleDriver(CliDriver):
+    name = "example"
+    executable = "example-cli"
+
+    def launch(self, req: Request, exe: Path, tmp: Path) -> Launch:
+        return Launch(argv=(str(exe), "--prompt", req.prompt))
+
+    def parser(self, req: Request) -> Parser:
+        return ExampleParser()
+
 
 registry = DriverRegistry()
-registry.register("my-cli", MyDriver())
-result = await run(Request(driver="my-cli", prompt="Hi", cwd=Path.cwd()), registry=registry)
+registry.register("example", ExampleDriver())
 ```
 
-`DriverRegistry(builtins=False)` starts empty. An unknown driver name raises `KeyError`.
+`CliDriver` owns process supervision, sequencing, classification, and cleanup. A driver must not add permission flags on behalf of a caller.
+
+## Migrating from 0.1
+
+The v2 API has no compatibility layer.
+
+- **Renamed:** `Driver` is now `CliDriver`, an abstract base class. Implement `launch()` and `parser()` instead of `check()` and `run()`. `check()` is now a module function taking a driver name and optional `executable`, `env`, `refresh`, and `registry` keywords.
+- **Removed:** `EventHandler` and `SpawnHandler` public aliases. Their callback types appear directly in the `run`, `stream`, and `run_sync` signatures. `Driver` is no longer exported; use `CliDriver`.
+- **Added public names:** `CliDriver`, `ErrorCode`, `Facts`, `FileChanged`, `JsonValue`, `Launch`, `Notice`, `Parser`, `RawEvent`, `RequestError`, and `ReasoningDelta`.
+- **Outcomes and errors:** `Outcome.LIMIT_REACHED` is new for turn and budget limits, which 0.1 reported as retryable. `Diagnostic.code` is an `ErrorCode` instead of a free-form `str`.
+- **Fields added:** `ToolCompleted.tool` and `ToolCompleted.output`; `Result.cost_usd`, `Result.duration_s`, `Result.num_turns`, and `Result.stop_reason`; `Capabilities.version`.
+- **Event schema:** `schema_version` is no longer stored on each event. Import the `SCHEMA_VERSION` module constant instead. `entity_id` contains the CLI-native identifier or `None` when unavailable.
+- **Result behavior:** `Result.text` is the parser's final text when reported, otherwise the last assistant message, rather than the concatenation of all assistant messages. Codex reports `Result.model` as `None`.
+- **Removed behavior:** codex rollout-file parsing is removed; Codex output is parsed from its structured stream.
+- **Registry:** `DriverRegistry.register` accepts only `CliDriver` instances; structurally compatible objects are rejected.
+- **Callbacks and cancel:** `run` accepts synchronous or awaitable `on_event` and `on_spawn` callbacks. `run_sync` now accepts `on_event` and a `threading.Event` for `cancel`.
+- **Request:** `idle_timeout_s` and `raw_events` are available in addition to the 0.1 request fields.
 
 ## Known limits
 
-- **Windows process trees.** Cleanup uses `taskkill /T /F`. A descendant whose launcher exits first can be missed. Job Objects are not used in 0.1.
-- **Live behavior.** The test suite uses fake CLIs. The live tests in `tests/test_live.py` run the real CLIs and are excluded by default: `uv run pytest -m live -rP`.
+- On Windows, Job Object assignment happens immediately after process spawn. In the short window before assignment, the process can exit or spawn descendants; descendants created in that window are outside the job and can survive process-tree cleanup. If creating, configuring, or assigning the Job Object fails, the library silently falls back to `taskkill /T`, which cannot reach a descendant whose parent already exited; no `cleanup_incomplete` warning is reported in that case.
+- Agy receives the prompt in argv, which is limited to 100 KiB by the driver.
+- Agy output that mixes structured JSON events and plain text on stdout is unsupported.
+- Set `idle_timeout_s` longer than the longest tool command, because a quiet but still-running command can reach the idle timeout.
 
 ## Contributing
 

@@ -11,13 +11,16 @@ Guidance for AI coding agents working in this repository. Humans should read [CO
 | Path | Contents |
 |---|---|
 | `src/coding_agent_cli/api.py` | Public entry points: `run`, `stream`, `run_sync`, `check` |
-| `src/coding_agent_cli/types.py`, `events.py` | Public frozen dataclasses |
-| `src/coding_agent_cli/registry.py` | `Driver` protocol and `DriverRegistry` |
-| `src/coding_agent_cli/_process.py`, `_platform.py` | Subprocess transport and process-tree kill |
+| `src/coding_agent_cli/types.py`, `events.py` | Public frozen dataclasses and typed events |
+| `src/coding_agent_cli/driver.py` | Public `CliDriver`, `Launch`, `Parser`, and driver helpers |
+| `src/coding_agent_cli/registry.py` | Built-in registration and `DriverRegistry` |
+| `src/coding_agent_cli/_transport.py`, `_platform.py` | Subprocess transport and process-tree cleanup |
 | `src/coding_agent_cli/_args.py`, `_classify.py` | Argument validation and outcome classification |
-| `src/coding_agent_cli/_drivers/` | Built-in drivers and shared `CliDriver` helpers |
-| `tests/fixtures/fake_cli/` | Fake CLIs used by all unit tests |
-| `docs/plans/coding-agent-cli/` | Design, plan, and phase journals |
+| `src/coding_agent_cli/_drivers/` | Built-in drivers and shared helpers |
+| `tests/fixtures/fake_cli/`, `tests/fixtures/recorded/` | Fake CLIs and sanitized recorded fixtures |
+| `tests/replay.py` | Recorded fixture replay helpers |
+| `scripts/record_fixtures.py` | Developer fixture recording script, not shipped in the wheel |
+| `docs/plans/coding-agent-cli-v2/` | Design, plan, and phase journals |
 
 ## Commands
 
