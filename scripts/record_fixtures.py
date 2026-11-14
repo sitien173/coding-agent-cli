@@ -156,9 +156,12 @@ def _should_cancel_on_line(cli: str, line: str) -> bool:
     return '"text_delta"' in stripped
 
 
-def _kill_process_group(proc: subprocess.Popen[bytes], sig: int) -> None:
+def _kill_process_group(proc: subprocess.Popen[bytes], *, force: bool) -> None:
     with contextlib.suppress(ProcessLookupError, OSError):
-        os.killpg(proc.pid, sig)
+        if sys.platform == "win32":
+            proc.kill()
+        else:
+            os.killpg(proc.pid, signal.SIGKILL if force else signal.SIGTERM)
 
 
 def _run_capture(
@@ -210,7 +213,7 @@ def _run_capture(
                 decoded = line.decode("utf-8", errors="replace")
                 if _should_cancel_on_line(cli, decoded):
                     cancelled = True
-                    _kill_process_group(proc, signal.SIGTERM)
+                    _kill_process_group(proc, force=False)
 
     def _read_stderr() -> None:
         assert proc.stderr is not None
@@ -225,14 +228,14 @@ def _run_capture(
         returncode: int | None = proc.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         timed_out = True
-        _kill_process_group(proc, signal.SIGTERM)
+        _kill_process_group(proc, force=False)
         try:
             returncode = proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            _kill_process_group(proc, signal.SIGKILL)
+            _kill_process_group(proc, force=True)
             returncode = proc.wait(timeout=5)
     finally:
-        _kill_process_group(proc, signal.SIGKILL)
+        _kill_process_group(proc, force=True)
         t_out.join(timeout=5)
         t_err.join(timeout=5)
 
