@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/sitien173/coding-agent-cli/compare/v0.2.0...v0.2.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **codex:** place options before the resume subcommand ([f401d23](https://github.com/sitien173/coding-agent-cli/commit/f401d2379c008f95a4a51268c1734b81f769ace3))
+
 ## [0.2.0](https://github.com/sitien173/coding-agent-cli/compare/v0.1.0...v0.2.0) (2026-11-14)
 
 
