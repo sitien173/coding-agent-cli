@@ -390,18 +390,15 @@ class CodexDriver(CliDriver):
                 "args config 'model_reasoning_effort' conflicts with the reasoning option",
             )
 
-        argv: list[str] = [os.fspath(exe), "exec"]
-        if req.session_id:
-            # codex exec resume accepts --json, options, <session_id>, - (FINDINGS.md #2).
-            argv.append("resume")
-        argv.append("--json")
+        argv: list[str] = [os.fspath(exe), "exec", "--json"]
         if req.model is not None:
             argv.extend(["--model", req.model])
         if req.reasoning is not None:
             argv.extend(["-c", f"model_reasoning_effort={_toml_string(req.reasoning)}"])
         argv.extend(req.args)
         if req.session_id:
-            argv.append(req.session_id)
+            # Options go before `resume`: the subcommand rejects exec options such as --profile and --sandbox.
+            argv.extend(["resume", req.session_id])
         argv.append("-")
         return Launch(argv=tuple(argv), stdin=req.prompt.encode("utf-8"))
 

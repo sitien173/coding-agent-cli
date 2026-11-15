@@ -78,6 +78,7 @@ Top-level `event` values observed:
 
 2. **Codex option placement around `resume`**: **settled**.
    - `codex exec resume --json <session_id> -` succeeded with exit code `0` (`codex/0.169.0/resume.meta.json`, `codex/0.169.0/resume.stdout.jsonl`). `codex exec resume --help` also accepts `-c`, `-m`/`--model`, and `--dangerously-bypass-approvals-and-sandbox` as options on the `resume` subcommand.
+   - `codex exec resume` rejects exec options such as `--profile`, `--sandbox`, `--add-dir`, and `--cd` (`error: unexpected argument '--profile' found`, codex-cli 0.169.0). The driver places all options before `resume`, as 0.1.0 did: `codex exec --json [options] resume <session_id> -`.
 
 3. **Claude budget-exceeded subtype name and `--max-turns` acceptance**: **settled**.
    - Budget exceeded emits `"type": "result"`, `"is_error": true`, `"subtype": "error_max_budget_usd"`, `"terminal_reason": "budget_exhausted"` (`claude/2.1.296/budget.stdout.jsonl:31`).

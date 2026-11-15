@@ -49,15 +49,30 @@ def test_launch_resume_placement(tmp_path: Path) -> None:
     assert launch.argv == (
         str(Path("/usr/bin/codex")),
         "exec",
-        "resume",
         "--json",
         "--model",
         "gpt-5",
         "-c",
         'model_reasoning_effort="low"',
+        "resume",
         "00000000-0000-4000-8000-000000000001",
         "-",
     )
+
+
+def test_launch_resume_keeps_exec_only_args_before_subcommand(tmp_path: Path) -> None:
+    driver = CodexDriver()
+    launch = driver.launch(
+        _req(
+            tmp_path,
+            session_id="00000000-0000-4000-8000-000000000001",
+            args=("--profile", "work", "--sandbox", "read-only"),
+        ),
+        Path("/usr/bin/codex"),
+        tmp_path,
+    )
+    assert launch.argv[launch.argv.index("resume") :] == ("resume", "00000000-0000-4000-8000-000000000001", "-")
+    assert launch.argv.index("--profile") < launch.argv.index("resume")
 
 
 def test_launch_rejects_system_prompt(tmp_path: Path) -> None:
