@@ -488,6 +488,23 @@ def test_parser_structured_status_and_usage() -> None:
     assert facts.usage.cache_read == 30
 
 
+def test_parser_maps_stream_input_slash_rejection_to_invalid_prompt() -> None:
+    parser = AgyParser()
+    parser.feed_json(
+        {
+            "event": "result",
+            "result": {
+                "status": "ERROR",
+                "error": "/help is answered by the CLI itself and is unavailable with --input-format stream-json",
+                "num_turns": 0,
+            },
+        }
+    )
+    facts = parser.finish({})
+    assert facts.error is not None
+    assert facts.error.code == ErrorCode.INVALID_PROMPT
+
+
 def test_parser_unknown_result_status_is_not_treated_as_error() -> None:
     from coding_agent_cli._classify import RunFacts, classify
 

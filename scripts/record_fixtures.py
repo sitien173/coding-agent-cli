@@ -639,7 +639,7 @@ def derive_outcome_code(
     ):
         return "agent_fatal", "auth"
 
-    # 5. Invalid model or context overflow (precedes timeout)
+    # 5. Invalid model, invalid prompt, or context overflow (precedes timeout)
     if any(
         marker in error_lower
         for marker in (
@@ -651,6 +651,8 @@ def derive_outcome_code(
         )
     ) or ("model" in error_lower and "not found" in error_lower):
         return "request_fatal", "invalid_model"
+    if "unavailable with --input-format stream-json" in error_lower:
+        return "request_fatal", "invalid_prompt"
     if any(
         marker in error_lower
         for marker in (

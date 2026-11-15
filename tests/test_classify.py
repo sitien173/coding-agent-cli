@@ -89,6 +89,16 @@ def test_row05_invalid_model_or_context_overflow() -> None:
     assert r2.error is not None and r2.error.code == ErrorCode.CONTEXT_OVERFLOW
 
 
+def test_row05_cli_invalid_prompt_is_request_fatal() -> None:
+    result = classify(
+        RunFacts(stop_cause="exited", returncode=2),
+        Facts(error=Diagnostic(code=ErrorCode.INVALID_PROMPT, message="/help is unavailable")),
+        text="",
+    )
+    assert result.outcome == Outcome.REQUEST_FATAL
+    assert result.error is not None and result.error.code == ErrorCode.INVALID_PROMPT
+
+
 def test_row06_parser_error() -> None:
     result = classify(
         RunFacts(stop_cause="exited", parser_error="bad json line"),

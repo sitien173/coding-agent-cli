@@ -19,6 +19,6 @@
   "returncode": 2,
   "timed_out": false,
   "cancelled": false,
-  "outcome": "retryable",
-  "code": "execution_error"
+  "outcome": "request_fatal",
+  "code": "invalid_prompt"
 }

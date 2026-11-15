@@ -186,8 +186,8 @@ def classify(run: RunFacts, facts: Facts, *, text: str) -> Result:
     # Row 4: Auth failure
     if cli is not None and cli.code == ErrorCode.AUTH:
         return _result(run, facts, text=result_text, outcome=Outcome.AGENT_FATAL, error=cli)
-    # Row 5: Invalid model or context overflow
-    if cli is not None and cli.code in (ErrorCode.INVALID_MODEL, ErrorCode.CONTEXT_OVERFLOW):
+    # Row 5: Invalid model, invalid prompt, or context overflow
+    if cli is not None and cli.code in (ErrorCode.INVALID_MODEL, ErrorCode.INVALID_PROMPT, ErrorCode.CONTEXT_OVERFLOW):
         return _result(run, facts, text=result_text, outcome=Outcome.REQUEST_FATAL, error=cli)
     # Row 6: Parser raised
     if run.parser_error is not None:

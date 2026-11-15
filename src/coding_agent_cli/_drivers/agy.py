@@ -34,6 +34,8 @@ _UUID_PATTERN = r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})
 _CONVERSATION_ID_RE = re.compile(rf"(?:Created|Streaming) conversation {_UUID_PATTERN}")
 _COMMAND_TOOLS = frozenset({"run_command"})
 _ERROR_STATUS = "ERROR"
+# agy 1.5.9 rejects CLI-answered slash commands such as /help in stream-json input mode.
+_STREAM_INPUT_REJECTED = "unavailable with --input-format stream-json"
 
 _OWNED_FLAGS = (
     "--output-format",
@@ -257,7 +259,10 @@ class AgyParser:
         error: Diagnostic | None = None
         # Only SUCCESS and ERROR are evidenced in agy/1.5.9/; leave other statuses uninterpreted.
         if self._status == _ERROR_STATUS:
-            code = keyword_code(error_text) or ErrorCode.EXECUTION_ERROR
+            if _STREAM_INPUT_REJECTED in self._result_error:
+                code = ErrorCode.INVALID_PROMPT
+            else:
+                code = keyword_code(error_text) or ErrorCode.EXECUTION_ERROR
             error = Diagnostic(code=code, message=self._result_error or f"agy reported status {self._status}")
 
         return Facts(

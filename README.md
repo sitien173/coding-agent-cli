@@ -243,7 +243,7 @@ The v2 API has no compatibility layer.
 ## Known limits
 
 - On Windows, Job Object assignment happens immediately after process spawn. In the short window before assignment, the process can exit or spawn descendants; descendants created in that window are outside the job and can survive process-tree cleanup. If creating, configuring, or assigning the Job Object fails, the library silently falls back to `taskkill /T`, which cannot reach a descendant whose parent already exited; no `cleanup_incomplete` warning is reported in that case.
-- Agy receives the prompt on stdin through `--input-format stream-json`, and agy rejects CLI-answered slash-command prompts such as `/help` in that mode.
+- Agy receives the prompt on stdin through `--input-format stream-json`, and agy rejects CLI-answered slash-command prompts such as `/help` in that mode. The run then returns `request_fatal` with code `invalid_prompt`.
 - Agy output that mixes structured JSON events and plain text on stdout is unsupported.
 - Set `idle_timeout_s` longer than the longest tool command, because a quiet but still-running command can reach the idle timeout.
 
