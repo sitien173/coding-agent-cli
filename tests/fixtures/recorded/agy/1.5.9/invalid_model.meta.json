@@ -7,14 +7,15 @@
     "agy",
     "--output-format",
     "stream-json",
+    "--input-format",
+    "stream-json",
     "--disable-slash-commands",
     "--log-file",
     "<REDACTED_PATH>",
     "--new-project",
     "--model",
     "nonexistent-model-xyz-9999",
-    "--print",
-    "<PROMPT>"
+    "--print="
   ],
   "returncode": 1,
   "timed_out": false,

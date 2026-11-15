@@ -19,7 +19,74 @@ import scripts.record_fixtures as rf  # noqa: E402
 
 
 def test_agy_default_scenarios_exclude_auth_failure() -> None:
-    assert "auth_failure" not in rf._scenario_specs("agy")
+    scenarios = rf._scenario_specs("agy")
+    assert "auth_failure" not in scenarios
+    assert "stdin_stream_json" not in scenarios
+    assert "large_prompt" in scenarios
+    assert "slash_command" in scenarios
+
+
+def test_build_agy_call_uses_stdin_stream_json_and_print_eq(tmp_path: Path) -> None:
+    log_path = tmp_path / "agy.log"
+    for scenario in (
+        "plain",
+        "shell",
+        "edit",
+        "reasoning",
+        "invalid_model",
+        "cancel",
+        "resume",
+        "large_prompt",
+        "slash_command",
+    ):
+        prompt = rf._prompt_for_scenario(scenario, cli="agy")
+        argv, stdin_text, env = rf._build_agy_call(
+            scenario,
+            prompt,
+            log_path,
+            "sess-123" if scenario == "resume" else "",
+            tmp_path / "empty",
+        )
+        assert env is None
+        assert argv[:5] == ["agy", "--output-format", "stream-json", "--input-format", "stream-json"]
+        assert argv[-1] == "--print="
+        assert "--print" not in argv
+        assert not any(prompt in arg for arg in argv)
+        if scenario == "slash_command":
+            assert "--disable-slash-commands" not in argv
+        else:
+            assert "--disable-slash-commands" in argv
+        if scenario == "resume":
+            assert "--conversation" in argv
+            assert argv[argv.index("--conversation") + 1] == "sess-123"
+            assert "--new-project" not in argv
+        else:
+            assert "--new-project" in argv
+        if scenario in ("shell", "edit"):
+            assert "--dangerously-skip-permissions" in argv
+        else:
+            assert "--dangerously-skip-permissions" not in argv
+        if scenario == "reasoning":
+            assert "--effort" in argv
+            assert argv[argv.index("--effort") + 1] == "low"
+        if scenario == "invalid_model":
+            assert argv[argv.index("--model") + 1] == "nonexistent-model-xyz-9999"
+        else:
+            assert argv[argv.index("--model") + 1] == "gemini-3.8-flash-low"
+
+        assert stdin_text is not None
+        assert stdin_text.endswith("\n")
+        assert stdin_text.count("\n") == 1
+        assert json.loads(stdin_text) == {"event": "user", "message": {"content": [{"type": "text", "text": prompt}]}}
+
+
+def test_agy_large_prompt_and_slash_command_prompts() -> None:
+    large = rf._prompt_for_scenario("large_prompt", cli="agy")
+    assert len(large.encode("utf-8")) > 131_072
+    marker = "LARGE-PROMPT-MARKER-7F3A"
+    assert large.endswith(marker)
+    assert large.count(marker) == 1
+    assert rf._prompt_for_scenario("slash_command", cli="agy") == "/help"
 
 
 def test_agy_explicit_auth_failure_rejected_before_launch(monkeypatch: pytest.MonkeyPatch) -> None:

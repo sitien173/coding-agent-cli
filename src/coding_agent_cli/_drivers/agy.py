@@ -1,7 +1,8 @@
-"""Agy CLI driver: stream-json on stdout, a temp log file for session ID, and prompt in argv."""
+"""Agy CLI driver: stream-json on stdout, a temp log file for session ID, and prompt on stdin."""
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -26,7 +27,6 @@ from ..events import (
 from ..types import Diagnostic, ErrorCode, Request, Usage
 from ._common import as_int
 
-PROMPT_LIMIT_BYTES = 100 * 1024
 WINDOWS_COMMAND_LINE_LIMIT_CHARS = 32767
 _MAX_ERROR_LINES = 50
 _WINDOWS = os.name == "nt"
@@ -55,18 +55,13 @@ _PORTABLE_CONFLICTS = {
 
 
 def _validate_prompt(prompt: str) -> None:
-    """Reject a prompt that cannot be passed in argv."""
+    """Reject a prompt that cannot be encoded as a UTF-8 JSON line."""
     if "\x00" in prompt:
         raise RequestError(ErrorCode.INVALID_PROMPT, "prompt cannot contain NUL bytes")
     try:
-        size = len(prompt.encode("utf-8"))
+        prompt.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise RequestError(ErrorCode.INVALID_PROMPT, f"prompt is not valid UTF-8: {exc}") from exc
-    if size > PROMPT_LIMIT_BYTES:
-        raise RequestError(
-            ErrorCode.INVALID_PROMPT,
-            f"agy prompt is {size} bytes, above the 100 KiB ({PROMPT_LIMIT_BYTES} bytes) limit for the prompt argument",
-        )
 
 
 def _validate_command_line(argv: list[str]) -> None:
@@ -278,7 +273,7 @@ class AgyParser:
 
 
 class AgyDriver(CliDriver):
-    """Runs ``agy --print`` with the prompt in argv. Never adds a permission flag."""
+    """Runs ``agy --print=`` with the prompt on stdin. Never adds a permission flag."""
 
     name: ClassVar[str] = "agy"
     executable: ClassVar[str] = "agy"
@@ -294,7 +289,15 @@ class AgyDriver(CliDriver):
                 raise RequestError(error.code, error.message)
 
         log_path = tmp / "agy.log"
-        argv = [os.fspath(exe), "--output-format", "stream-json", "--log-file", os.fspath(log_path)]
+        argv = [
+            os.fspath(exe),
+            "--output-format",
+            "stream-json",
+            "--input-format",
+            "stream-json",
+            "--log-file",
+            os.fspath(log_path),
+        ]
         if req.session_id:
             argv.extend(["--conversation", req.session_id])
         else:
@@ -304,13 +307,14 @@ class AgyDriver(CliDriver):
         if req.reasoning is not None:
             argv.extend(["--effort", req.reasoning])
         argv.extend(req.args)
-        # The prompt comes last so no caller arg can take it as a flag value.
-        argv.extend(["--print", req.prompt])
+        # Keep --print= last so no caller arg can take it as a flag value.
+        argv.append("--print=")
         _validate_command_line(argv)
-        return Launch(argv=tuple(argv), read_back=(log_path,))
+        payload = json.dumps({"event": "user", "message": {"content": [{"type": "text", "text": req.prompt}]}}) + "\n"
+        return Launch(argv=tuple(argv), stdin=payload.encode("utf-8"), read_back=(log_path,))
 
     def parser(self, req: Request) -> Parser:
         return AgyParser(requested_session=req.session_id)
 
 
-__all__ = ["PROMPT_LIMIT_BYTES", "AgyDriver", "AgyParser"]
+__all__ = ["AgyDriver", "AgyParser"]

@@ -1,0 +1,24 @@
+{
+  "cli": "agy",
+  "version": "1.5.9",
+  "version_output": "1.5.9",
+  "scenario": "slash_command",
+  "argv": [
+    "agy",
+    "--output-format",
+    "stream-json",
+    "--input-format",
+    "stream-json",
+    "--log-file",
+    "<REDACTED_PATH>",
+    "--new-project",
+    "--model",
+    "gemini-3.8-flash-low",
+    "--print="
+  ],
+  "returncode": 2,
+  "timed_out": false,
+  "cancelled": false,
+  "outcome": "retryable",
+  "code": "execution_error"
+}

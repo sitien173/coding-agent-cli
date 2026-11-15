@@ -69,12 +69,13 @@ Top-level `type` values observed:
 Top-level `event` values observed:
 - `init` (`conversation_id`, `init.model`, `init.cwd`, `init.tools`) — `agy/1.5.9/plain.stdout.jsonl:1`
 - `step_update` (`step_update.step_type`: `user_input`, `system_message`, `agent_response`, `tool`; `state`: `ACTIVE`, `DONE`) — `agy/1.5.9/plain.stdout.jsonl:2-4`, `agy/1.5.9/resume.stdout.jsonl`, `agy/1.5.9/edit.stdout.jsonl:4-9`
-- `result` (`result.status`: `SUCCESS` or `ERROR`, `result.response`, `result.error`, `result.usage`) — `agy/1.5.9/plain.stdout.jsonl:5`, `agy/1.5.9/stdin_stream_json.stdout.jsonl:2`
+- `result` (`result.status`: `SUCCESS` or `ERROR`, `result.response`, `result.error`, `result.usage`) — `agy/1.5.9/plain.stdout.jsonl:5`, `agy/1.5.9/slash_command.stdout.jsonl:2`
 
 ## Open Questions from `DESIGN.md`
 
-1. **Agy `--input-format stream-json` message schema**: **not settled**.
-   - Sending Anthropic-style `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"..."}]}}` on stdin with `--input-format stream-json --output-format stream-json` exited with code `1`, emitting `error: stream input message is missing the "event" field` on stderr (`agy/1.5.9/stdin_stream_json.stderr.txt:1`) and `status: "ERROR"` in `result` (`agy/1.5.9/stdin_stream_json.stdout.jsonl:2`). Because the exact `event` input schema is not documented in `agy --help`, v1 argv prompt delivery stays.
+1. **Agy `--input-format stream-json` message schema**: **settled**.
+   - Sending `{"event":"user","message":{"content":[{"type":"text","text":"..."}]}}` as a single JSON line on stdin with `--output-format stream-json --input-format stream-json` and `--print=` is accepted by `agy` 1.5.9 and exits cleanly after EOF (`agy/1.5.9/plain.meta.json`, `agy/1.5.9/plain.stdout.jsonl`).
+   - Verified across all recorded agy scenarios, including a >128 KiB prompt (`agy/1.5.9/large_prompt.meta.json`, `agy/1.5.9/large_prompt.stdout.jsonl`), session resume (`agy/1.5.9/resume.meta.json`), and invalid model (`agy/1.5.9/invalid_model.meta.json`). CLI-answered slash commands such as `/help` are rejected in this mode with exit code `2`, `status: "ERROR"`, and zero tokens (`agy/1.5.9/slash_command.meta.json`, `agy/1.5.9/slash_command.stdout.jsonl:2`, `agy/1.5.9/slash_command.stderr.txt:1`).
 
 2. **Codex option placement around `resume`**: **settled**.
    - `codex exec resume --json <session_id> -` succeeded with exit code `0` (`codex/0.169.0/resume.meta.json`, `codex/0.169.0/resume.stdout.jsonl`). `codex exec resume --help` also accepts `-c`, `-m`/`--model`, and `--dangerously-bypass-approvals-and-sandbox` as options on the `resume` subcommand.

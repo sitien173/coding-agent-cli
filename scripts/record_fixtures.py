@@ -302,7 +302,7 @@ def _scenario_specs(cli: str) -> list[str]:
     if cli == "claude":
         return [*base, "max_turns", "budget", "no_verbose"]
     if cli == "agy":
-        return [s for s in base if s != "auth_failure"] + ["stdin_stream_json"]
+        return [s for s in base if s != "auth_failure"] + ["large_prompt", "slash_command"]
     if cli == "pi":
         return [*base, "no_p"]
     return base
@@ -420,31 +420,27 @@ def _build_pi_call(
     return argv, prompt, env
 
 
+_LARGE_PROMPT_MARKER = "LARGE-PROMPT-MARKER-7F3A"
+_LARGE_PROMPT = (
+    "Ignore this filler line for context padding.\n" * 3200
+    + f"\nIgnore all previous filler lines. Reply with exactly: {_LARGE_PROMPT_MARKER}"
+)
+
+
 def _build_agy_call(
     scenario: str, prompt: str, log_path: Path, session_id: str, empty_cfg: Path
 ) -> tuple[list[str], str | None, dict[str, str] | None]:
     env: dict[str, str] | None = None
-    if scenario == "stdin_stream_json":
-        argv = [
-            "agy",
-            "--output-format",
-            "stream-json",
-            "--input-format",
-            "stream-json",
-            "--log-file",
-            str(log_path),
-            "--new-project",
-            "--model",
-            "gemini-3.8-flash-low",
-            "--print",
-            "",
-        ]
-        stdin_payload = json.dumps(
-            {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": prompt}]}}
-        )
-        return argv, stdin_payload + "\n", None
-
-    argv = ["agy", "--output-format", "stream-json", "--disable-slash-commands", "--log-file", str(log_path)]
+    argv = [
+        "agy",
+        "--output-format",
+        "stream-json",
+        "--input-format",
+        "stream-json",
+    ]
+    if scenario != "slash_command":
+        argv.append("--disable-slash-commands")
+    argv.extend(["--log-file", str(log_path)])
     if scenario == "resume" and session_id:
         argv.extend(["--conversation", session_id])
     else:
@@ -460,8 +456,9 @@ def _build_agy_call(
     elif scenario == "reasoning":
         argv.extend(["--effort", "low"])
 
-    argv.extend(["--print", prompt])
-    return argv, None, env
+    argv.append("--print=")
+    stdin_payload = json.dumps({"event": "user", "message": {"content": [{"type": "text", "text": prompt}]}})
+    return argv, stdin_payload + "\n", env
 
 
 def _prompt_for_scenario(scenario: str, *, cli: str = "") -> str:
@@ -485,7 +482,8 @@ def _prompt_for_scenario(scenario: str, *, cli: str = "") -> str:
         "max_turns": "First run `ls` with Bash, then edit hello.txt to add 'done'.",
         "budget": "Write a short poem about trees.",
         "no_verbose": "Reply with hello",
-        "stdin_stream_json": "Reply with exactly the word: PONG",
+        "large_prompt": _LARGE_PROMPT,
+        "slash_command": "/help",
         "no_p": "Reply with exactly the word: PONG",
     }
     return prompts[scenario]

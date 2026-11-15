@@ -2,24 +2,24 @@
   "cli": "agy",
   "version": "1.5.9",
   "version_output": "1.5.9",
-  "scenario": "stdin_stream_json",
+  "scenario": "large_prompt",
   "argv": [
     "agy",
     "--output-format",
     "stream-json",
     "--input-format",
     "stream-json",
+    "--disable-slash-commands",
     "--log-file",
     "<REDACTED_PATH>",
     "--new-project",
     "--model",
     "gemini-3.8-flash-low",
-    "--print",
-    ""
+    "--print="
   ],
-  "returncode": 1,
+  "returncode": 0,
   "timed_out": false,
   "cancelled": false,
-  "outcome": "retryable",
-  "code": "execution_error"
+  "outcome": "success",
+  "code": null
 }

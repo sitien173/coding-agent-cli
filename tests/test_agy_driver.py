@@ -21,7 +21,7 @@ from coding_agent_cli import (
     ToolStarted,
     UsageUpdated,
 )
-from coding_agent_cli._drivers.agy import PROMPT_LIMIT_BYTES, AgyDriver, AgyParser
+from coding_agent_cli._drivers.agy import AgyDriver, AgyParser
 from tests.replay import FIXTURES, replay, replay_truncated
 
 
@@ -41,12 +41,19 @@ def test_launch_new_project_and_log_file_read_back(tmp_path: Path) -> None:
     run_tmp.mkdir()
     launch = driver.launch(_req(tmp_path, model="gemini-3.8-flash-low", reasoning="low"), Path("/usr/bin/agy"), run_tmp)
 
-    assert launch.stdin is None
+    assert isinstance(launch.stdin, bytes)
+    assert launch.stdin.endswith(b"\n")
+    assert launch.stdin.count(b"\n") == 1
+    assert json.loads(launch.stdin) == {"event": "user", "message": {"content": [{"type": "text", "text": "hello"}]}}
     assert len(launch.read_back) == 1
     log_path = launch.read_back[0]
     assert log_path.parent == run_tmp
     assert "--output-format" in launch.argv
-    assert "stream-json" in launch.argv
+    assert "--input-format" in launch.argv
+    in_idx = launch.argv.index("--input-format")
+    assert launch.argv[in_idx + 1] == "stream-json"
+    out_idx = launch.argv.index("--output-format")
+    assert launch.argv[out_idx + 1] == "stream-json"
     assert "--log-file" in launch.argv
     assert str(log_path) in launch.argv
     assert "--new-project" in launch.argv
@@ -55,7 +62,9 @@ def test_launch_new_project_and_log_file_read_back(tmp_path: Path) -> None:
     assert "gemini-3.8-flash-low" in launch.argv
     assert "--effort" in launch.argv
     assert "low" in launch.argv
-    assert launch.argv[-2:] == ("--print", "hello")
+    assert launch.argv[-1] == "--print="
+    assert "--print" not in launch.argv
+    assert not any("hello" in arg for arg in launch.argv)
 
 
 def test_launch_resume_uses_conversation_flag(tmp_path: Path) -> None:
@@ -84,14 +93,51 @@ def test_launch_never_adds_permission_flags(tmp_path: Path) -> None:
         assert not any("skip-permissions" in arg or "approve" in arg for arg in launch.argv)
 
 
-def test_launch_rejects_oversized_and_invalid_prompt(tmp_path: Path) -> None:
+def test_launch_accepts_large_prompt_on_stdin(tmp_path: Path) -> None:
     driver = AgyDriver()
     run_tmp = tmp_path / "run_tmp"
     run_tmp.mkdir()
+    prompt = "a" * (200 * 1024)
+    launch = driver.launch(_req(tmp_path, prompt=prompt), Path("/usr/bin/agy"), run_tmp)
 
-    with pytest.raises(RequestError) as exc_info:
-        driver.launch(_req(tmp_path, prompt="a" * (PROMPT_LIMIT_BYTES + 1)), Path("/usr/bin/agy"), run_tmp)
-    assert exc_info.value.code == ErrorCode.INVALID_PROMPT
+    assert isinstance(launch.stdin, bytes)
+    assert launch.stdin.endswith(b"\n")
+    assert launch.stdin.count(b"\n") == 1
+    assert json.loads(launch.stdin) == {"event": "user", "message": {"content": [{"type": "text", "text": prompt}]}}
+    assert not any(prompt in arg for arg in launch.argv)
+    assert launch.argv[-1] == "--print="
+    assert "--print" not in launch.argv
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "line 1\nline 2\r\nline 3",
+        "café 🚀 日本語",
+        'say "hello"',
+        r"path\to\file\n",
+        'line 1\n"quoted" \\ café 🚀',
+    ],
+)
+def test_launch_encodes_prompt_as_single_ndjson_line(tmp_path: Path, prompt: str) -> None:
+    driver = AgyDriver()
+    run_tmp = tmp_path / "run_tmp"
+    run_tmp.mkdir()
+    launch = driver.launch(_req(tmp_path, prompt=prompt), Path("/usr/bin/agy"), run_tmp)
+
+    assert isinstance(launch.stdin, bytes)
+    assert launch.stdin.endswith(b"\n")
+    assert launch.stdin.count(b"\n") == 1
+    assert json.loads(launch.stdin) == {"event": "user", "message": {"content": [{"type": "text", "text": prompt}]}}
+    assert not any(prompt in arg for arg in launch.argv)
+    assert launch.argv[-1] == "--print="
+    assert "--print" not in launch.argv
+
+
+def test_launch_rejects_invalid_prompt(tmp_path: Path) -> None:
+    driver = AgyDriver()
+    run_tmp = tmp_path / "run_tmp"
+    run_tmp.mkdir()
 
     with pytest.raises(RequestError) as exc_info:
         driver.launch(_req(tmp_path, prompt="bad\x00prompt"), Path("/usr/bin/agy"), run_tmp)
@@ -465,9 +511,9 @@ def test_parser_unknown_result_status_is_not_treated_as_error() -> None:
 
 def test_replay_recorded_nonzero_cache_usage() -> None:
     _, result = replay(AgyParser(), "agy", _AGY_VERSION, "shell")
-    assert result.usage.input == 12160
-    assert result.usage.output == 107
-    assert result.usage.cache_read == 7950
+    assert result.usage.input == 12157
+    assert result.usage.output == 101
+    assert result.usage.cache_read == 7947
     assert result.usage.cache_write is None
     assert result.usage.context_used is None
     assert result.usage.context_window is None

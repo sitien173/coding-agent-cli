@@ -7,6 +7,8 @@
     "agy",
     "--output-format",
     "stream-json",
+    "--input-format",
+    "stream-json",
     "--disable-slash-commands",
     "--log-file",
     "<REDACTED_PATH>",
@@ -15,8 +17,7 @@
     "gemini-3.8-flash-low",
     "--effort",
     "low",
-    "--print",
-    "<PROMPT>"
+    "--print="
   ],
   "returncode": 0,
   "timed_out": false,
