@@ -22,7 +22,7 @@ from .events import (
 from .registry import DriverRegistry
 from .types import Capabilities, Diagnostic, ErrorCode, Outcome, Request, Result, Usage
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 __all__ = [
     "SCHEMA_VERSION",
