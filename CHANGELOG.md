@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/sitien173/coding-agent-cli/compare/v0.2.1...v0.2.2) (2026-11-15)
+
+
+### Bug Fixes
+
+* **agy:** classify slash-command rejection as request_fatal ([3c8b94a](https://github.com/sitien173/coding-agent-cli/commit/3c8b94aa7bb0bbf4e7a43b28c172d2336e6c263d))
+* **agy:** send the prompt on stdin to remove the 100 KiB limit ([e1ddf81](https://github.com/sitien173/coding-agent-cli/commit/e1ddf816267cb52543fed6c52495999148eaa52c))
+
 ## [0.2.1](https://github.com/sitien173/coding-agent-cli/compare/v0.2.0...v0.2.1) (2026-11-15)
 
 
